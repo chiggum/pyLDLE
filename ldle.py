@@ -215,7 +215,7 @@ class LDLE:
                  eta_max = 100,
                  to_tear = True,
                  nu = 3,
-                 max_iter0 = 10,
+                 max_iter0 = 20,
                  max_iter1 = 10,
                  vis = None,
                  vis_y_options = {}):
