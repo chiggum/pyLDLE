@@ -601,3 +601,58 @@ class Visualize:
             plt.show()
             fig.canvas.draw()
             fig.canvas.flush_events()
+    
+    def seq_of_intermediate_views(self, X, c, seq, rho, Utilde, figsize=None, s=20):
+        seq = np.copy(seq)
+        M = seq.shape[0]
+        mu = np.zeros((M,X.shape[1]))
+        source = np.zeros((M-1,X.shape[1]))
+        comp = np.zeros((M-1,X.shape[1]))
+        for m in range(M):
+            mu[m,:] = np.mean(X[Utilde[m,:],:],0)
+        
+        for m in range(1,M):
+            source[m-1,:] = mu[rho[seq[m]],:]
+            comp[m-1,:] = mu[seq[m],:]-source[m-1,:]
+         
+        seq[seq] = np.arange(M)
+        seq = seq[c]
+        assert X.shape[1] <= 3, 'X.shape[1] must be either 2 or 3.'
+        fig = plt.figure(figsize=figsize)
+        if X.shape[1] == 2:
+            plt.scatter(X[:,0], X[:,1], s=s, c=seq, cmap='jet')
+            plt.axis('image')
+            plt.colorbar()
+            plt.quiver(source[:,0], source[:,1], comp[:,0], comp[:,1], np.arange(M-1),
+                       cmap='gray', angles='xy', scale_units='xy', scale=1)
+        elif X.shape[1] == 3:
+            ax = fig.add_subplot(projection='3d')
+            ax.autoscale()
+            p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=seq, cmap='jet')
+            fig.colorbar(p)
+        plt.title('Views colored in the sequence they are visited')
+    
+    def global_embedding(self, y, labels, cmap0, color_of_pts_on_tear=None, cmap1=None,
+                         title=None, figsize=None, s=30):
+        fig = plt.figure(figsize=figsize)
+        figManager = plt.get_current_fig_manager()
+        figManager.window.showMaximized()
+        d = y.shape[1]
+        if d == 2:
+            ax = fig.add_subplot()
+            ax.scatter(y[:,0], y[:,1], s=s, c=labels, cmap=cmap0)
+            ax.axis('image')
+        elif d ==3:
+            ax = fig.add_subplot(projection='3d')
+            ax.scatter(y[:,0], y[:,1], y[:,2], s=s, c=labels, cmap=cmap0)
+        
+        if color_of_pts_on_tear is not None:
+            if d == 2:
+                ax.scatter(y[:,0], y[:,1],
+                           s=s, c=color_of_pts_on_tear, cmap=cmap1)
+            elif d==3:
+                ax.scatter(y[:,0], y[:,1], y[:,2],
+                           s=s, c=color_of_pts_on_tear, cmap=cmap1)
+        ax.axis('off')
+        if title is not None:
+            ax.set_title(title)
