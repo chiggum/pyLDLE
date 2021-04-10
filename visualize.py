@@ -4,8 +4,7 @@ import numpy as np
 from ldle import eval_param
 
 from matplotlib import pyplot as plt
-plt.rcParams['text.latex.preamble']=[r"\usepackage{xcolor}"]
-plt.rcParams['scatter.marker']='.'
+plt.rcParams.update({'scatter.marker':'.'})
 from matplotlib.widgets import Slider
 from mpl_toolkits.mplot3d import Axes3D
 
@@ -75,6 +74,20 @@ class Visualize:
             p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=zeta, cmap='jet')
             fig.colorbar(p)
         plt.title('Data')
+    
+    def intrinsic_dim(self, X, chi, figsize=None, s=20):
+        assert X.shape[1] <= 3, 'X.shape[1] must be either 2 or 3.'
+        fig = plt.figure(figsize=figsize)
+        if X.shape[1] == 2:
+            plt.scatter(X[:,0], X[:,1], s=s, c=chi, cmap='jet')
+            plt.axis('image')
+            plt.colorbar()
+        elif X.shape[1] == 3:
+            ax = fig.add_subplot(projection='3d')
+            ax.autoscale()
+            p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=chi, cmap='jet')
+            fig.colorbar(p)
+        plt.title('\chi')
     
     def chosen_eigevec_inds_for_local_views(self, X, Psi_i, figsize=None, s=20):
         assert X.shape[1] <= 3, 'X.shape[1] must be either 2 or 3.'

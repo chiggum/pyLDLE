@@ -9,8 +9,8 @@ class Datasets:
     def rectanglegrid(self, ar=16, RES=100):
         sideLx = np.sqrt(ar)
         sideLy = 1/sideLx
-        RESx = sideLx*RES+1
-        RESy = sideLy*RES+1
+        RESx = int(sideLx*RES+1)
+        RESy = int(sideLy*RES+1)
         x = np.linspace(0, sideLx, RESx)
         y = np.linspace(0, sideLy, RESy)
         xv, yv = np.meshgrid(x, y)
@@ -30,8 +30,8 @@ class Datasets:
         sideLx = sideL1x+4*Rmax
         sideLy = 2*Rmax
 
-        RESx = np.ceil(sideLx*RES)+1
-        RESy = np.ceil(sideLy*RES)+1
+        RESx = int(np.ceil(sideLx*RES)+1)
+        RESy = int(np.ceil(sideLy*RES)+1)
         x1 = np.linspace(0,sideLx,RESx)
         y1 = np.linspace(0,sideLy,RESy)
         x1v, y1v = np.meshgrid(x1,y1);

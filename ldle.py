@@ -4,7 +4,7 @@ import numpy as np
 
 from scipy.spatial.distance import pdist, squareform
 from scipy.sparse.csgraph import laplacian, minimum_spanning_tree, breadth_first_order
-from scipy.sparse import coo_matrix, csr_matrix
+from scipy.sparse import coo_matrix, csr_matrix, diags
 from scipy.sparse.linalg import eigs, eigsh
 from scipy.stats.distributions import chi2
 from scipy.linalg import inv, svdvals, orthogonal_procrustes, norm
@@ -12,6 +12,10 @@ from scipy.linalg import inv, svdvals, orthogonal_procrustes, norm
 from sklearn.neighbors import NearestNeighbors
 
 from matplotlib import pyplot as plt
+
+import torch
+import torch.nn as nn
+import geotorch
 
 # Solves for T, v s.t. T, v = argmin_{R,w)||AR + w - B||_F^2
 # Here A and B have same shape n x d, T is d x d and v is 1 x d
@@ -133,15 +137,7 @@ def graph_laplacian(d_e, k_nn, k_tune, gl_type,
         return laplacian(K, normed=False,
                          return_diag=return_diag,
                          use_out_degree=use_out_degree)
-    elif gl_type == 'random_walk':
-        L, D = laplacian(K, normed=False,
-                         return_diag=True,
-                         use_out_degree=use_out_degree)
-        L.data /= D[L.row]
-        if return_diag:
-            return L, D
-        else:
-            return L
+        return L, D
     
 
 def local_views_in_ambient_space(d_e, k):
@@ -167,14 +163,15 @@ def compute_Atilde(phi, d_e, U, epsilon, p, d, print_prop = 0.25):
     Gtilde = G/(2*t)
     
     Atilde=np.zeros((n,N,N))
+    
     for k in range(n):
         if print_freq and np.mod(k,print_freq)==0:
-            print('Atilde_k: %d points processed...' % k)
+            print('A_k, Atilde_k: %d points processed...' % k)
         U_k = U[k,:]==1
         dphi_k = phi[U_k,:]-phi[k,:]
         Atilde[k,:,:] = np.dot(dphi_k.T, dphi_k*(Gtilde[k,U_k][:,np.newaxis]))
     
-    print('Atilde_k: all points processed...')
+    print('Atilde_k, Atilde_k: all points processed...')
     return Atilde
     
 class LDLE:
@@ -197,6 +194,8 @@ class LDLE:
         nu: to account for increased separation.
         max_iter0: Maximum number of iterations to refine global embedding.
         max_iter1: Maximum number of iterations to refine global embedding for a given sequence.
+        use_geotorch: Use geotorch to compute final global embedding.
+        geotorch_options: options for the geotorch optimizer.
         to_vis_y: whether to visualize global embedding as it is initiated and refined.
     '''
     def __init__(self,
@@ -217,6 +216,8 @@ class LDLE:
                  nu = 3,
                  max_iter0 = 20,
                  max_iter1 = 10,
+                 use_geotorch = False,
+                 geotorch_options = {'lr': 1e-2},
                  vis = None,
                  vis_y_options = {}):
         assert X is not None or d_e is not None, "Either X or d_e should be provided."
@@ -239,6 +240,8 @@ class LDLE:
         self.nu = nu
         self.max_iter0 = max_iter0
         self.max_iter1 = max_iter1
+        self.use_geotorch = use_geotorch
+        self.geotorch_options = geotorch_options
         self.vis = vis
         if vis is not None:
             default_vis_y_options = {'cmap0': 'summer',
@@ -250,19 +253,21 @@ class LDLE:
         
             self.vis_y_options = default_vis_y_options
         
-        # Construct graph Laplacian
-        self.L = graph_laplacian(self.d_e, self.k_nn,
-                                 self.k_tune, self.gl_type)
-        
         # Eigendecomposition of graph Laplacian
         # Note: Eigenvalues are returned sorted.
         # Following is needed for reproducibility of lmbda and phi
         np.random.seed(42)
-        v0 = np.random.uniform(0,1,self.L.shape[0])
+        v0 = np.random.uniform(0,1,self.d_e.shape[0])
         if self.gl_type != 'random_walk':
+            # Construct graph Laplacian
+            self.L = graph_laplacian(self.d_e, self.k_nn,
+                                     self.k_tune, self.gl_type)
             self.lmbda, self.phi = eigsh(self.L, k=self.N+1, v0=v0, which='SM')
         else:
-            self.lmbda, self.phi = eigs(self.L, k=self.N+1, v0=v0, which='SM')
+            # Construct graph Laplacian
+            self.L, self.D = graph_laplacian(self.d_e, self.k_nn,
+                                             self.k_tune, 'unnorm', return_diag = True)
+            self.lmbda, self.phi = eigs(self.L, k=self.N+1, M=diags(self.D), v0=v0, which='SM')
         
         # Ignore the trivial eigenvalue and eigenvector
         self.lmbda = self.lmbda[1:]
@@ -308,8 +313,14 @@ class LDLE:
         print('\nRefining parameters and computing final global embedding...')
         
         # Compute final global embedding
-        self.T_final, self.v_final, self.y_final,\
-        self.color_of_pts_on_tear_final = self.compute_final_global_embedding()
+        if not self.use_geotorch:
+            print('Using GPA...')
+            self.T_final, self.v_final, self.y_final,\
+            self.color_of_pts_on_tear_final = self.compute_final_global_embedding()
+        else:
+            print('Using geotorch...')
+            self.T_final, self.v_final, self.y_final,\
+            self.color_of_pts_on_tear_final = self.compute_final_global_embedding_geotorch_based()
     
     def compute_LDLE(self, print_prop = 0.25):
         # initializations
@@ -352,7 +363,7 @@ class LDLE:
             i[0] = np.argmax((temp >= delta*alpha_1) & (Stilde_k))
 
             for s in range(1,d):
-                i_prev = i[0:s];
+                i_prev = i[0:s]
                 # compute temp variable to help compute Hs_{kij} below
                 temp = inv(Atilde_k[np.ix_(i_prev,i_prev)])
                 
@@ -837,6 +848,100 @@ class LDLE:
                 color_of_pts_on_tear = None
             
             print('error:', np.mean(err))
+            # Visualize current embedding
+            if self.vis is not None:
+                v_opts = self.vis_y_options
+                self.vis.global_embedding(y, v_opts['labels'], v_opts['cmap0'],
+                                          color_of_pts_on_tear, v_opts['cmap1'],
+                                          'Iter: %d' % it0)
+                plt.waitforbuttonpress(1)
+
+        return T, v, y, color_of_pts_on_tear
+    
+    def compute_final_global_embedding_geotorch_based(self):
+        # Intializations
+        M = self.Utilde.shape[0]
+        n = self.phi.shape[0]
+        d = self.d
+
+        T = np.copy(self.T_init)
+        v = np.copy(self.v_init)
+
+        # Initialize pytorch parameters
+        Tv = [] # T_m, v_m = Tv[m].weight, Tv[m].bias
+        params = []
+        for m in range(M):
+            Tv.append(torch.nn.Linear(d, d, bias=True).double())
+            # Orthogonality constraints on weights
+            geotorch.orthogonal(Tv[-1], "weight")
+            # Initialize weights
+            Tv[-1].weight = torch.from_numpy(T[m,:,:].T)
+            Tv[-1].bias.data = torch.from_numpy(v[m,:])
+            if m != self.s_0: # Never update parameters of first intermediate view
+                params += Tv[-1].parameters()
+
+        optim = torch.optim.Adam(params, lr=self.geotorch_options['lr'])
+
+        np.random.seed(42) # for reproducbility
+
+        y = np.copy(self.y_init)
+
+        # If to tear the closed manifolds
+        if self.to_tear:
+            # Compute |Utildeg_{mm'}|
+            _, n_Utildeg_Utildeg = self.compute_Utildeg(y)
+
+        # Refine global embedding y
+        for it0 in range(self.max_iter0):
+            print('Iteration: %d' % it0)
+            for epoch in range(self.max_iter1):
+                loss = torch.tensor(0)
+                for s in range(M):
+                    Utilde_s = self.Utilde[s,:]
+
+                    # If to tear apart closed manifolds
+                    if self.to_tear:
+                        # Find more views to align sth view with
+                        Z_s = (self.n_Utilde_Utilde[s,:] > 0) & (n_Utildeg_Utildeg[s,:] > 0)
+                    # otherwise
+                    else:
+                        # Align sth view with all the views which have
+                        # an overlap with sth view in the ambient space
+                        Z_s = self.n_Utilde_Utilde[s,:] > 0
+
+                    Z_s = np.where(Z_s)[0].tolist()
+
+                    for mp in Z_s:
+                        Utilde_s_mp = Utilde_s & self.Utilde[mp,:]
+                        V_s_mp = eval_param(self.phi, self.Psitilde_gamma, self.Psitilde_i,
+                                              s, Utilde_s_mp, self.betatilde)
+                        V_mp_s = eval_param(self.phi, self.Psitilde_gamma, self.Psitilde_i,
+                                              mp, Utilde_s_mp, self.betatilde)
+                        #pdb.set_trace()
+                        loss = loss + torch.sum(torch.square(Tv[s](torch.from_numpy(V_s_mp)) - Tv[mp](torch.from_numpy(V_mp_s))))
+
+                optim.zero_grad()
+                loss.backward()
+                optim.step()
+                print("Epoch {} Loss: {:.6f}".format(epoch, loss))
+
+            for s in range(M):
+                # Store learned T and v
+                T[s,:,:] = Tv[s].weight.detach().numpy().T
+                v[s,:] = Tv[s].bias.detach().numpy()
+                # Compute global embedding of points in sth cluster
+                C_s = self.c==s
+                y[C_s,:] = eval_param(self.phi, self.Psitilde_gamma, self.Psitilde_i,
+                                       s, C_s, self.betatilde, T, v)
+
+            # If to tear the closed manifolds
+            if self.to_tear:
+                # Compute |Utildeg_{mm'}|
+                _, n_Utildeg_Utildeg = self.compute_Utildeg(y)
+                color_of_pts_on_tear = self.compute_color_of_pts_on_tear(y, n_Utildeg_Utildeg)
+            else:
+                color_of_pts_on_tear = None
+
             # Visualize current embedding
             if self.vis is not None:
                 v_opts = self.vis_y_options
