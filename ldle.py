@@ -217,7 +217,7 @@ class LDLE:
                  max_iter0 = 20,
                  max_iter1 = 10,
                  use_geotorch = False,
-                 geotorch_options = {'lr': 1e-2},
+                 geotorch_options = {'lr': 1e-2, 'n_neg_samples': 5, 'lambda_r': 1e-2},
                  vis = None,
                  vis_y_options = {}):
         assert X is not None or d_e is not None, "Either X or d_e should be provided."
@@ -253,25 +253,9 @@ class LDLE:
         
             self.vis_y_options = default_vis_y_options
         
-        # Eigendecomposition of graph Laplacian
-        # Note: Eigenvalues are returned sorted.
-        # Following is needed for reproducibility of lmbda and phi
-        np.random.seed(42)
-        v0 = np.random.uniform(0,1,self.d_e.shape[0])
-        if self.gl_type != 'random_walk':
-            # Construct graph Laplacian
-            self.L = graph_laplacian(self.d_e, self.k_nn,
-                                     self.k_tune, self.gl_type)
-            self.lmbda, self.phi = eigsh(self.L, k=self.N+1, v0=v0, which='SM')
-        else:
-            # Construct graph Laplacian
-            self.L, self.D = graph_laplacian(self.d_e, self.k_nn,
-                                             self.k_tune, 'unnorm', return_diag = True)
-            self.lmbda, self.phi = eigs(self.L, k=self.N+1, M=diags(self.D), v0=v0, which='SM')
-        
-        # Ignore the trivial eigenvalue and eigenvector
-        self.lmbda = self.lmbda[1:]
-        self.phi = self.phi[:,1:]
+    def fit(self):
+        # Obtain eigenvalues and eigenvectors of graph Laplacian
+        self.lmbda, self.phi = self.eig_graph_laplacian()
         
         # Construct local views in the ambient space
         # and obtain radius of each view
@@ -321,6 +305,83 @@ class LDLE:
             print('Using geotorch...')
             self.T_final, self.v_final, self.y_final,\
             self.color_of_pts_on_tear_final = self.compute_final_global_embedding_geotorch_based()
+    
+    def search_for_tau_and_delta(self, tau_lim=[10,90], ntau=5, delta_lim=[0.1,0.9], ndelta=5):
+        # Obtain eigenvalues and eigenvectors of graph Laplacian
+        self.lmbda, self.phi = self.eig_graph_laplacian()
+        
+        # Construct local views in the ambient space
+        # and obtain radius of each view
+        self.U, epsilon = local_views_in_ambient_space(self.d_e, self.k)
+        
+        # Compute Atilde
+        self.Atilde = compute_Atilde(self.phi, self.d_e, self.U, epsilon, self.p, self.d)
+        
+        # Compute gamma
+        self.gamma = np.sqrt(1/(np.dot(self.U,self.phi**2)/np.sum(self.U,1)[:,np.newaxis]))
+        
+        print('\nSearching for best tau and delta...')
+        
+        dtau = (tau_lim[1]-tau_lim[0])/(ntau-1)
+        ddelta = (delta_lim[1]-delta_lim[0])/(ndelta-1)
+        
+        min_max_zeta = np.inf
+        tau_star = None
+        delta_star = None
+        
+        self.tau = tau_lim[0] +dtau
+        while self.tau <= tau_lim[1]:
+            self.delta = delta_lim[0]
+            while self.delta <= delta_lim[1]:
+                print('tau =', self.tau)
+                print('delta =', self.delta)
+                # Compute LDLE: Low Distortion Local Eigenmaps
+                self.Psi_gamma0, self.Psi_i0, self.zeta0 = self.compute_LDLE()
+
+                # Postprocess LDLE
+                self.Psi_gamma, self.Psi_i, self.zeta = self.postprocess_LDLE()
+                
+                
+                max_zeta0 = np.max(self.zeta0)
+                max_zeta = np.max(self.zeta)
+                
+                print('max(zeta0)=', max_zeta0)
+                print('max(zeta)=', max_zeta)
+                
+                if max_zeta < min_max_zeta:
+                    tau_star = self.tau
+                    delta_star = self.delta
+                    min_max_zeta = max_zeta
+            
+                self.delta += ddelta
+            self.tau += dtau
+        
+        print('Best tau =', tau_star)
+        print('Best delta =', delta_star)
+        print('Best zeta =', min_max_zeta)
+        
+    
+    def eig_graph_laplacian(self):
+        # Eigendecomposition of graph Laplacian
+        # Note: Eigenvalues are returned sorted.
+        # Following is needed for reproducibility of lmbda and phi
+        np.random.seed(42)
+        v0 = np.random.uniform(0,1,self.d_e.shape[0])
+        if self.gl_type != 'random_walk':
+            # Construct graph Laplacian
+            L = graph_laplacian(self.d_e, self.k_nn,
+                                 self.k_tune, self.gl_type)
+            lmbda, phi = eigsh(L, k=self.N+1, v0=v0, which='SM')
+        else:
+            # Construct graph Laplacian
+            L, D = graph_laplacian(self.d_e, self.k_nn,
+                                     self.k_tune, 'unnorm', return_diag = True)
+            lmbda, phi = eigs(L, k=self.N+1, M=diags(D), v0=v0, which='SM')
+        
+        # Ignore the trivial eigenvalue and eigenvector
+        lmbda = lmbda[1:]
+        phi = phi[:,1:]
+        return lmbda, phi
     
     def compute_LDLE(self, print_prop = 0.25):
         # initializations
@@ -849,11 +910,11 @@ class LDLE:
             
             print('error:', np.mean(err))
             # Visualize current embedding
-            if self.vis is not None:
+            if self.vis is not None and np.mod(it0,5)==0:
                 v_opts = self.vis_y_options
                 self.vis.global_embedding(y, v_opts['labels'], v_opts['cmap0'],
                                           color_of_pts_on_tear, v_opts['cmap1'],
-                                          'Iter: %d' % it0)
+                                          ('Iter_%d' % it0))
                 plt.waitforbuttonpress(1)
 
         return T, v, y, color_of_pts_on_tear
@@ -881,6 +942,7 @@ class LDLE:
                 params += Tv[-1].parameters()
 
         optim = torch.optim.Adam(params, lr=self.geotorch_options['lr'])
+        n_neg_samples = self.geotorch_options['n_neg_samples']
 
         np.random.seed(42) # for reproducbility
 
@@ -898,17 +960,19 @@ class LDLE:
                 loss = torch.tensor(0)
                 for s in range(M):
                     Utilde_s = self.Utilde[s,:]
+                    n_Utilde_Utilde_s = self.n_Utilde_Utilde[s,:]
 
                     # If to tear apart closed manifolds
                     if self.to_tear:
                         # Find more views to align sth view with
-                        Z_s = (self.n_Utilde_Utilde[s,:] > 0) & (n_Utildeg_Utildeg[s,:] > 0)
+                        Z_s = (n_Utilde_Utilde_s > 0) & (n_Utildeg_Utildeg[s,:] > 0)
                     # otherwise
                     else:
                         # Align sth view with all the views which have
                         # an overlap with sth view in the ambient space
-                        Z_s = self.n_Utilde_Utilde[s,:] > 0
+                        Z_s = n_Utilde_Utilde_s > 0
 
+                    not_Z_s = np.where(n_Utilde_Utilde_s == 0)[0].tolist() # non-overlapping views
                     Z_s = np.where(Z_s)[0].tolist()
 
                     for mp in Z_s:
@@ -918,8 +982,22 @@ class LDLE:
                         V_mp_s = eval_param(self.phi, self.Psitilde_gamma, self.Psitilde_i,
                                               mp, Utilde_s_mp, self.betatilde)
                         #pdb.set_trace()
-                        loss = loss + torch.sum(torch.square(Tv[s](torch.from_numpy(V_s_mp)) - Tv[mp](torch.from_numpy(V_mp_s))))
+                        loss = loss + torch.mean(torch.square(Tv[s](torch.from_numpy(V_s_mp)) - Tv[mp](torch.from_numpy(V_mp_s))))
 
+                    np.random.shuffle(not_Z_s)
+                    for mp in not_Z_s[:n_neg_samples]:
+                        V_s_s = eval_param(self.phi, self.Psitilde_gamma, self.Psitilde_i,
+                                              s, Utilde_s, self.betatilde)
+                        V_s_s = np.mean(V_s_s, 0)[np.newaxis,:]
+                        Utilde_mp = self.Utilde[mp,:]
+                        V_mp_mp = eval_param(self.phi, self.Psitilde_gamma, self.Psitilde_i,
+                                              mp, Utilde_mp, self.betatilde)
+                        V_mp_mp = np.mean(V_mp_mp, 0)[np.newaxis,:]
+                        d_1 = torch.sum(torch.square(Tv[s](torch.from_numpy(V_s_s)) - Tv[mp](torch.from_numpy(V_mp_mp))))
+                        d_2 = np.mean(self.d_e[np.ix_(Utilde_s,Utilde_mp)])
+                        loss = loss + self.geotorch_options['lambda_r'] * torch.absolute(d_1 - d_2)
+
+                loss = loss/M
                 optim.zero_grad()
                 loss.backward()
                 optim.step()
@@ -947,7 +1025,7 @@ class LDLE:
                 v_opts = self.vis_y_options
                 self.vis.global_embedding(y, v_opts['labels'], v_opts['cmap0'],
                                           color_of_pts_on_tear, v_opts['cmap1'],
-                                          'Iter: %d' % it0)
+                                          ('Iter_%d' % it0))
                 plt.waitforbuttonpress(1)
 
         return T, v, y, color_of_pts_on_tear

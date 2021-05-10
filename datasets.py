@@ -1,6 +1,7 @@
 import numpy as np
 import scipy.integrate as integrate
 from scipy.optimize import fsolve
+from sklearn.datasets import fetch_openml
 
 class Datasets:
     def __init__(self):
@@ -174,8 +175,8 @@ class Datasets:
         sideLy=1/sideLx
         Rout = sideLx/(2*np.pi)
         Rin = sideLy/(2*np.pi)
-        RESx=sideLx*RES+1
-        RESy=sideLy*RES+1
+        RESx=int(sideLx*RES+1)
+        RESy=int(sideLy*RES+1)
         x=np.linspace(0,sideLx,RESx)[:-1] # remove 2pi
         y=np.linspace(0,sideLy,RESy)[:-1] # remove 2pi
         xv, yv = np.meshgrid(x, y)
@@ -217,8 +218,8 @@ class Datasets:
         sideLy=1/sideLx
         Rout = sideLx/(2*np.pi)
         Rin = sideLy/(2*np.pi)
-        RESx=sideLx*RES+1
-        RESy=sideLy*RES+1
+        RESx=int(sideLx*RES+1)
+        RESy=int(sideLy*RES+1)
         x=np.linspace(0,sideLx,RESx)[:-1] # remove 2pi
         y=np.linspace(0,sideLy,RESy)[:-1] # remove 2pi
         xv, yv = np.meshgrid(x, y)
@@ -234,8 +235,8 @@ class Datasets:
         sideLx=np.sqrt(ar)
         sideLy=1/sideLx
         Rmax = sideLx/(2*np.pi)
-        RESx=sideLx*RES+1+50
-        RESy=sideLy*RES+1
+        RESx=int(sideLx*RES+1+50)
+        RESy=int(sideLy*RES+1)
         x=np.linspace(0,sideLx,RESx)[:-1] #remove 2pi
         y=np.linspace(-sideLy/2,sideLy/2,RESy)
         xv, yv = np.meshgrid(x, y)
@@ -245,5 +246,40 @@ class Datasets:
                          (1+0.5*yv*np.cos(0.5*xv))*np.sin(xv),
                          0.5*yv*np.sin(0.5*xv)], axis=1)   
         labelsMat = np.concatenate([xv, yv], axis=1)
+        print('X.shape = ', X.shape)
+        return X, labelsMat
+    
+    def solidcuboid3d(self, l=0.5, w=0.5, RES=20):
+        sideLx = l
+        sideLy = w
+        sideLz = 1/(l*w)
+        RESx=int(sideLx*RES+1)
+        RESy=int(sideLy*RES+1)
+        RESz=int(sideLz*RES+1)
+        x=np.linspace(0,sideLx,RESx)
+        y=np.linspace(0,sideLy,RESy)
+        z=np.linspace(0,sideLz,RESz)
+        xv, yv, zv = np.meshgrid(x, y, z)
+        xv = xv.flatten('F')[:,np.newaxis]
+        yv = yv.flatten('F')[:,np.newaxis]
+        zv = zv.flatten('F')[:,np.newaxis]
+        X = np.concatenate([xv,yv,zv], axis=1)
+        labelsMat = X
+        print('X.shape = ', X.shape)
+        return X, labelsMat
+    
+    def mnist(self, digits, n):
+        X0, y0 = fetch_openml('mnist_784', version=1, return_X_y=True, as_frame=False)
+        X = []
+        y = []
+        for digit in digits:
+            X1 = X0[y0 == str(digit),:]
+            X1 = X1[:n,:]
+            X.append(X1)
+            y.append(np.zeros(n)+digit)
+            
+        X = np.concatenate(X, axis=0)
+        y = np.concatenate(y, axis=0)
+        labelsMat = y[:,np.newaxis]
         print('X.shape = ', X.shape)
         return X, labelsMat
