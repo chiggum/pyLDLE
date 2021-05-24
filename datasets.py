@@ -2,6 +2,7 @@ import numpy as np
 import scipy.integrate as integrate
 from scipy.optimize import fsolve
 from sklearn.datasets import fetch_openml
+import scipy
 
 class Datasets:
     def __init__(self):
@@ -281,5 +282,15 @@ class Datasets:
         X = np.concatenate(X, axis=0)
         y = np.concatenate(y, axis=0)
         labelsMat = y[:,np.newaxis]
+        print('X.shape = ', X.shape)
+        return X, labelsMat
+    
+    def face_data(self, pc=False):
+        data = scipy.io.loadmat('D:/face_data/face_data.mat')
+        if pc:
+            X = data['image_pcs'].transpose()
+        else:
+            X = data['images'].transpose()
+        labelsMat = np.concatenate([data['lights'].transpose(), data['poses'].transpose()], axis=1)
         print('X.shape = ', X.shape)
         return X, labelsMat
