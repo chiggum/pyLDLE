@@ -3,6 +3,7 @@ import scipy.integrate as integrate
 from scipy.optimize import fsolve
 from sklearn.datasets import fetch_openml
 import scipy
+from scipy.spatial.distance import cdist
 
 class Datasets:
     def __init__(self):
@@ -21,7 +22,15 @@ class Datasets:
         X = np.concatenate([xv,yv], axis=1)
         labelsMat = X
         print('X.shape = ', X.shape)
-        return X, labelsMat
+        
+        n = X.shape[0]
+        ddX = np.zeros(n)
+        for k in range(n):
+            ddXx = np.min([X[k,0], sideLx-X[k,0]])
+            ddXy = np.min([X[k,1], sideLy-X[k,1]])
+            ddX[k] = np.min([ddXx, ddXy])
+            
+        return X, labelsMat, ddX
     
     def barbell(self, RES=100):
         A1 = 0.425
@@ -53,7 +62,26 @@ class Datasets:
         X = np.concatenate([xv,yv],axis=1)
         labelsMat = X
         print('X.shape = ', X.shape)
-        return X, labelsMat
+        
+        n = X.shape[0]
+        ddX = np.zeros(n)
+        for k in range(n):
+            x_ = X[k,0]
+            y_ = X[k,1]
+            if (x_<=2*Rmax) or (x_>=(2*Rmax+sideL1x)):
+                if x_>=(2*Rmax+sideL1x):
+                    x_=x_-2*Rmax-sideL1x
+                    x_=2*Rmax-x_
+                if (x_>=Rmax) and (y_>=Rmax) and (y_<=Rmax+sideL1y*(x_-Rmax)/(2*Rmax)):
+                    ddX[k]=np.sqrt((x_-2*Rmax)**2+(y_-(Rmax+sideL1y/2))**2)
+                elif (x_>Rmax) and (y_<=Rmax) and (y_>=Rmax-sideL1y*(x_-Rmax)/(2*Rmax)):
+                    ddX[k]=np.sqrt((x_-2*Rmax)**2+(y_-(Rmax-sideL1y/2))**2)
+                else:
+                    ddX[k]=Rmax-np.sqrt((x_-Rmax)**2+(y_-Rmax)**2)
+            else:
+                ddX[k]=np.min([y_-(Rmax-sideL1y/2),Rmax+sideL1y/2-y_])
+        ddX[ddX<1e-2] = 0
+        return X, labelsMat, ddX
     
     def squarewithtwoholes(self, RES=100):
         sideLx = 1
@@ -68,10 +96,24 @@ class Datasets:
         X = np.concatenate([xv,yv], axis=1)
         hole1 = np.sqrt((X[:,0] - 0.5*np.sqrt(2))**2 + (X[:,1]-0.5*np.sqrt(2))**2) < 0.1*np.sqrt(2)
         hole2 = np.abs(X[:,0] - 0.2*np.sqrt(2)) + np.abs(X[:,1]-0.2*np.sqrt(2)) < 0.1*np.sqrt(2)
+        
+        Xhole1 = X[hole1,:]
+        Xhole2 = X[hole2,:]
+        ddX1 = np.min(cdist(X,Xhole1),axis=1)
+        ddX1[ddX1<1e-2*1.2] = 0
+        ddX2 = np.min(cdist(X,Xhole2),axis=1)
+        ddX2[ddX2<1e-2*1.2] = 0
+        ddXx = np.minimum(X[:,0],sideLx-X[:,0])
+        ddXy = np.minimum(X[:,1],sideLy-X[:,1])
+        ddX = np.minimum(ddXx,ddXy)
+        ddX = np.minimum(ddX,ddX1)
+        ddX = np.minimum(ddX,ddX2)
+        
         X = X[~hole1 & ~hole2,:]
+        ddX = ddX[~hole1 & ~hole2]
         labelsMat = X
         print('X.shape = ', X.shape)
-        return X, labelsMat
+        return X, labelsMat, ddX
     
     def spherewithhole(self, n=10000):
         Rmax = np.sqrt(1/(4*np.pi))
@@ -84,12 +126,18 @@ class Datasets:
         z0 = np.max(X[:,2])
         R_hole = Rmax/6
         hole = (X[:,0]**2+X[:,1]**2+(X[:,2]-z0)**2)<R_hole**2
+        
+        Xhole = X[hole,:]
+        ddX = np.min(cdist(X,Xhole), axis=1)
+        ddX[ddX<1e-2*1.2] = 0
+        
         X = X[~hole,:]
+        ddX = ddX[~hole]
         thetav = thetav[~hole][:,np.newaxis]
         phiv = phiv[~hole][:,np.newaxis]
         labelsMat = np.concatenate([np.mod(thetav,2*np.pi), phiv], axis=1)
         print('X.shape = ', X.shape)
-        return X, labelsMat
+        return X, labelsMat, ddX
     
     def swissrollwithhole(self, RES=100):
         theta0 = 3*np.pi/2
@@ -122,11 +170,16 @@ class Datasets:
         z_mid = rmax*t_mid*np.sin(t_mid)
         hole = np.sqrt((X[:,0]-x_mid)**2+(X[:,1]-y_mid)**2+(X[:,2]-z_mid)**2)<0.1
 
+        Xhole = X[hole,:]
+        ddX = np.min(cdist(X,Xhole), axis=1)
+        ddX[ddX<1e-2*1.2] = 0
+        
         X = X[~hole,:]
+        ddX = ddX[~hole]
         tv = tv[~hole]
         labelsMat = np.concatenate([tv, X[:,[1]]], axis=1)
         print('X.shape = ', X.shape)
-        return X, labelsMat
+        return X, labelsMat, ddX
     
     def noisyswissroll(self, RES=100):
         theta0 = 3*np.pi/2
@@ -154,7 +207,7 @@ class Datasets:
         X = X+noise*np.random.uniform(0,1,[X.shape[0],3]);
         labelsMat = np.concatenate([tv, X[:,[1]]], axis=1)
         print('X.shape = ', X.shape)
-        return X, labelsMat
+        return X, labelsMat, None
         
     def sphere(self, n=10000):
         R = np.sqrt(1/(4*np.pi))
@@ -169,7 +222,7 @@ class Datasets:
         X = X*R;
         labelsMat = np.concatenate([np.mod(thetav,2*np.pi), phiv], axis=1)
         print('X.shape = ', X.shape)
-        return X, labelsMat
+        return X, labelsMat, None
     
     def flattorus4d(self, ar=4, RES=100):
         sideLx=np.sqrt(ar)
@@ -186,7 +239,7 @@ class Datasets:
         X=np.concatenate([Rout*np.cos(xv), Rout*np.sin(xv), Rin*np.cos(yv), Rin*np.sin(yv)], axis=1)
         labelsMat = np.concatenate([xv, yv], axis=1)
         print('X.shape = ', X.shape)
-        return X, labelsMat
+        return X, labelsMat, None
     
     def curvedtorus3d(self, n=10000):
         Rmax=0.25;
@@ -212,7 +265,7 @@ class Datasets:
                              rmax*np.sin(thetav)], axis=1)
         labelsMat = np.concatenate([thetav, phiv], axis=1)
         print('X.shape = ', X.shape)
-        return X, labelsMat
+        return X, labelsMat, None
     
     def kleinbottle4d(self, ar=4, RES=100):
         sideLx=np.sqrt(ar)
@@ -230,7 +283,7 @@ class Datasets:
                           Rin*np.sin(yv)*np.cos(xv/2), Rin*np.sin(yv)*np.sin(xv/2)], axis=1)
         labelsMat = np.concatenate([xv, yv], axis=1)
         print('X.shape = ', X.shape)
-        return X, labelsMat
+        return X, labelsMat, None
     
     def mobiusstrip3d(self, ar=4, RES=90):
         sideLx=np.sqrt(ar)
@@ -248,7 +301,27 @@ class Datasets:
                          0.5*yv*np.sin(0.5*xv)], axis=1)   
         labelsMat = np.concatenate([xv, yv], axis=1)
         print('X.shape = ', X.shape)
-        return X, labelsMat
+        return X, labelsMat, None
+    
+    def floor(self, noise=0.01, n_transmitters = 42, eps = 1):
+        data = scipy.io.loadmat('D:/pyLDLE/floor/floor.mat')
+        X = data['X']
+        np.random.seed(42)
+        X = X + np.random.uniform(0, 1, X.shape)*noise
+        t_inds = np.random.permutation(range(X.shape[0]))
+        t_inds = t_inds[:n_transmitters]
+        t_locs = X[t_inds,:]
+        
+        mask = np.ones(X.shape[0])
+        mask[t_inds] = 0
+        X = X[mask==1,:]
+        labelsMat = X.copy()
+        
+        dist_bw_x_and_t = cdist(X, t_locs)
+        X = np.exp(-(dist_bw_x_and_t**2)/(eps**2))
+        print('X.shape = ', X.shape)
+        return X, labelsMat, None
+        
     
     def solidcuboid3d(self, l=0.5, w=0.5, RES=20):
         sideLx = l
@@ -267,23 +340,23 @@ class Datasets:
         X = np.concatenate([xv,yv,zv], axis=1)
         labelsMat = X
         print('X.shape = ', X.shape)
-        return X, labelsMat
+        return X, labelsMat, None
     
     def mnist(self, digits, n):
         X0, y0 = fetch_openml('mnist_784', version=1, return_X_y=True, as_frame=False)
         X = []
         y = []
         for digit in digits:
-            X1 = X0[y0 == str(digit),:]
-            X1 = X1[:n,:]
-            X.append(X1)
+            X = X0[y0 == str(digit),:]
+            X = X[:n,:]
+            X.append(X)
             y.append(np.zeros(n)+digit)
             
         X = np.concatenate(X, axis=0)
         y = np.concatenate(y, axis=0)
         labelsMat = y[:,np.newaxis]
         print('X.shape = ', X.shape)
-        return X, labelsMat
+        return X, labelsMat, None
     
     def face_data(self, pc=False):
         data = scipy.io.loadmat('D:/face_data/face_data.mat')
@@ -293,4 +366,4 @@ class Datasets:
             X = data['images'].transpose()
         labelsMat = np.concatenate([data['lights'].transpose(), data['poses'].transpose()], axis=1)
         print('X.shape = ', X.shape)
-        return X, labelsMat
+        return X, labelsMat, None
