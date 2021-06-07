@@ -259,17 +259,17 @@ class Param:
         self.algo = algo
         self.T = None
         self.v = None
-        self.beta = None
+        self.b = None
         
     def eval_(self, k, mask):
         if self.algo == 'LDLE':
             temp = self.Psi_gamma[k,:][np.newaxis,:]*self.phi[np.ix_(mask,self.Psi_i[k,:])]
         elif self.algo == 'LTSAP':
             temp = np.dot(self.X[mask,:],self.Psi[k,:,:])
-        if self.beta is None:
+        if self.b is None:
             return temp
         else:
-            temp = self.beta[k]*temp
+            temp = self.b[k]*temp
             if self.T is not None and self.v is not None:
                 return np.dot(temp, self.T[k,:,:]) + self.v[[k],:]
             else:
