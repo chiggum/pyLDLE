@@ -6,7 +6,7 @@ import copy
 from scipy.spatial.distance import pdist, squareform
 from scipy.sparse.csgraph import laplacian, minimum_spanning_tree, breadth_first_order
 from scipy.sparse import coo_matrix, csr_matrix, diags
-from scipy.linalg import eigh, svd
+from scipy.linalg import eigh, svd, qr
 from scipy.sparse.linalg import eigs, eigsh, svds
 
 from scipy.stats.distributions import chi2
@@ -14,8 +14,11 @@ from scipy.linalg import inv, svdvals, orthogonal_procrustes, norm
 import custom_procrustes 
 
 from sklearn.neighbors import NearestNeighbors
+from sklearn.manifold._locally_linear import null_space
 
 from matplotlib import pyplot as plt
+
+import time
 
 # Solves for T, v s.t. T, v = argmin_{R,w)||AR + w - B||_F^2
 # Here A and B have same shape n x d, T is d x d and v is 1 x d
@@ -108,6 +111,7 @@ def graph_laplacian(d_e, k_nn, k_tune, gl_type,
                              algorithm='brute')
     neigh.fit(d_e)
     neigh_dist, neigh_ind = neigh.kneighbors()
+    #pdb.set_trace()
     
     # Compute tuning values for each pair of neighbors
     sigma = neigh_dist[:,k_tune-1].flatten()
@@ -183,6 +187,27 @@ def compute_gradient_using_LLR(X, phi, d_e, U, t, d, print_prop = 0.25):
     
     return grad_phi
 
+def compute_gradient_using_formula(X, phi, lmbda, d_e, U, t, d, print_prop = 0.25):
+    n,p = X.shape
+    print_freq = np.int(n*print_prop)
+    N = phi.shape[1]
+    grad_phi = np.zeros((n,N,p))
+    
+    #G = np.power(2*np.pi,-d/2)*np.power(2*t,-1/2)*np.exp(-d_e**2/(4*t))*U
+    G = np.exp(-d_e**2/(4*t))*U
+    G = G/(np.sum(G,axis=1)[:,np.newaxis])
+    
+    for k in range(n):
+        if print_freq and np.mod(k,print_freq)==0:
+            print('Gradient computation done for %d points...' % k)
+            
+        U_k = U[k,:]
+        X_k = X[U_k,:] - X[k,:]
+        C = (np.exp(lmbda[:,np.newaxis]*t[k])/(2*t[k]))
+        grad_phi[k,:,:] = C*np.dot(phi[U_k,:].T, X_k*(G[k,U_k][:,np.newaxis]))
+    
+    return grad_phi
+
 def compute_Atilde(phi, d_e, U, epsilon, p, d, print_prop = 0.25):
     n, N = phi.shape
     print_freq = np.int(n*print_prop)
@@ -214,6 +239,24 @@ def compute_Atilde_LLR(X, phi, d_e, U, epsilon, p, d, print_prop = 0.25):
     # t = 0.5*((epsilon**2)/chi2.ppf(p, df=d))
     t = 0.5*((epsilon**2)*chi2.ppf(p, df=d))
     grad_phi = compute_gradient_using_LLR(X, phi, d_e, U, t, d, print_prop = print_prop)
+    Atilde=np.zeros((n,N,N))
+    
+    for k in range(n):
+        if print_freq and np.mod(k,print_freq)==0:
+            print('A_k, Atilde_k: %d points processed...' % k)
+        
+        grad_phi_k = grad_phi[k,:,:]
+        Atilde[k,:,:] = np.dot(grad_phi_k, grad_phi_k.T)
+    
+    print('Atilde_k, Atilde_k: all points processed...')
+    return grad_phi, Atilde
+
+def compute_Atilde_formula(X, phi, lmbda, d_e, U, epsilon, p, d, print_prop = 0.25):
+    n, N = phi.shape
+    print_freq = np.int(n*print_prop)
+    
+    t = 0.5*((epsilon**2)/chi2.ppf(p, df=d))
+    grad_phi = compute_gradient_using_formula(X, phi, lmbda, d_e, U, t, d, print_prop = print_prop)
     Atilde=np.zeros((n,N,N))
     
     for k in range(n):
@@ -265,7 +308,9 @@ class Param:
         if self.algo == 'LDLE':
             temp = self.Psi_gamma[k,:][np.newaxis,:]*self.phi[np.ix_(mask,self.Psi_i[k,:])]
         elif self.algo == 'LTSAP':
-            temp = np.dot(self.X[mask,:],self.Psi[k,:,:])
+#             X_ = self.X[mask,:]
+#             temp = np.dot(X_ - np.mean(X_,axis=0)[np.newaxis,:],self.Psi[k,:,:])
+            temp = np.dot(self.X[mask,:]-self.mu[k,:][np.newaxis,:],self.Psi[k,:,:])
         if self.b is None:
             return temp
         else:
@@ -311,7 +356,7 @@ class LDLE:
                  N = 100,
                  k = 24,
                  no_gamma = False,
-                 use_LLR = False,
+                 Atilde_method = 'LDLE_1',
                  p = 0.99,
                  d = 2,
                  tau = 50,
@@ -329,7 +374,8 @@ class LDLE:
                  vis_y_options = {},
                  local_algo = 'LDLE',
                  global_algo = 'LDLE',
-                 ddX = None):
+                 ddX = None,
+                 exit_at_step1 = False):
         assert X is not None or d_e is not None, "Either X or d_e should be provided."
         self.X = X
         self.d_e = d_e
@@ -340,7 +386,7 @@ class LDLE:
         self.gl_type = gl_type
         self.N = N
         self.k = k
-        self.use_LLR = use_LLR
+        self.Atilde_method = Atilde_method
         self.no_gamma = no_gamma
         self.p = p
         self.d = d
@@ -359,6 +405,7 @@ class LDLE:
         self.global_algo = global_algo
         self.ddX = ddX
         self.vis = vis
+        self.exit_at_step1 = exit_at_step1
         if vis is not None:
             default_vis_y_options = {'cmap0': 'summer',
                                      'cmap1': 'jet',
@@ -370,6 +417,8 @@ class LDLE:
             self.vis_y_options = default_vis_y_options
         
     def fit(self):
+        old_time0 = time.time()
+        old_time = time.time()
         if self.d_e is None:
             if self.ddX is None or self.local_algo == 'LTSAP':
                 self.d_e = squareform(pdist(self.X))
@@ -377,27 +426,49 @@ class LDLE:
                 print('Doubling manifold')
                 self.d_e = double_manifold(self.X, self.ddX)
                 print('Doubled manifold')
-            
+        
+        print('###############')
+        print('Took %0.1f seconds to build distance matrix.' % (time.time()-old_time))
+        print('###############')
+        old_time = time.time()
+        
         if self.local_algo == 'LDLE':
             if self.lmbda is None or self.phi is None:
                 # Obtain eigenvalues and eigenvectors of graph Laplacian
                 self.lmbda, self.phi = self.eig_graph_laplacian()
 
+            print('###############')
+            print('Took %0.1f seconds to build graph Laplacian and compute its eigendecompositon.' % (time.time()-old_time))
+            print('###############')
+            old_time = time.time()
+                
             # Construct local views in the ambient space
             # and obtain radius of each view
             self.U, epsilon = local_views_in_ambient_space(self.d_e, self.k)
+            
+            print('###############')
+            print('Took %0.1f seconds to construct local views in ambient space.' % (time.time()-old_time))
+            print('###############')
+            old_time = time.time()
 
             # Compute Atilde
-            if self.use_LLR:
+            if self.Atilde_method == 'LLR':
                 self.grad_phi, self.Atilde = compute_Atilde_LLR(self.X, self.phi, self.d_e, self.U, epsilon, self.p, self.d)
-            else:
+            elif self.Atilde_method == 'LDLE_2':
+                self.grad_phi, self.Atilde = compute_Atilde_formula(self.X, self.phi, self.lmbda, self.d_e, self.U, epsilon, self.p, self.d)
+            else: #LDLE_1
                 self.Atilde = compute_Atilde(self.phi, self.d_e, self.U, epsilon, self.p, self.d)
-
+                
             # Compute gamma
             if self.no_gamma:
                 self.gamma = np.ones((self.d_e.shape[0], self.N))
             else:
                 self.gamma = np.sqrt(1/(np.dot(self.U,self.phi**2)/np.sum(self.U,1)[:,np.newaxis]))
+                
+            print('###############')
+            print('Took %0.1f seconds to compute Atilde and gamma.' % (time.time()-old_time))
+            print('###############')
+            old_time = time.time()
 
             print('\nConstructing low distortion local views using LDLE...')
 
@@ -418,7 +489,7 @@ class LDLE:
                 self.Atilde = self.Atilde[:n,:,:]
                 self.gamma = self.gamma[:n,:]
                 
-                if self.use_LLR:
+                if self.Atilde_method == 'LLR':
                     self.grad_phi = self.grad_phi[:n,:,:]
                 
                 self.local_param0.Psi_i = self.local_param0.Psi_i[:n,:]
@@ -435,18 +506,37 @@ class LDLE:
                     U_k = self.U[k,:]
                     self.local_param0.zeta[k] = compute_zeta(self.d_e[np.ix_(U_k,U_k)], self.local_param0.eval_(k, U_k))
                     self.local_param.zeta[k] = compute_zeta(self.d_e[np.ix_(U_k,U_k)], self.local_param.eval_(k, U_k))
-                
         else:
             # Construct local views in the ambient space
             # and obtain radius of each view
             self.U, epsilon = local_views_in_ambient_space(self.d_e, self.k)
 
-            print('\nConstructing low distortion local views using LTSAP...')
+            print('\nConstructing low distortion local views using LTSA...')
 
             # Compute LDLE: Low Distortion Local Eigenmaps
-            self.local_param = self.compute_LTSAP()
+            self.local_param0 = self.compute_LTSAP()
+            
+            if self.to_postprocess:
+                # Postprocess LDLE
+                self.local_param = self.postprocess_LDLE()
+            else:
+                self.local_param = self.local_param0
+        
+        print('###############')
+        print('Took %0.1f seconds to compute local views in embedding space.' % (time.time()-old_time))
+        print('###############')
+        old_time = time.time()
         
         print('Max local distortion =', np.max(self.local_param.zeta))
+        
+        print('###############')
+        print('Took %0.1f seconds to perform step 1: construct low distoriton local views' % (time.time()-old_time0))
+        print('###############')
+        old_time0 = time.time()
+        old_time = time.time()
+        
+        if self.exit_at_step1:
+            return
         
         # Compute b
         # self.local_param.b = self.compute_b()
@@ -454,30 +544,54 @@ class LDLE:
         print('\nClustering to obtain low distortion intermediate views...')
             
         # Clustering to obtain intermediate views
-        self.c, self.n_C, self.Utilde, self.intermed_param = self.construct_intermediate_views()
+        self.C, self.c, self.n_C, self.Utilde, self.intermed_param = self.construct_intermediate_views()
         
-        # Compute b
-        self.intermed_param.b = self.compute_b()
+        print('###############')
+        print('Took %0.1f seconds to perform step 2: construct intermediate views.' % (time.time()-old_time0))
+        print('###############')
+        old_time0 = time.time()
+        old_time = time.time()
         
         # Compute final global embedding
         if self.global_algo == 'LDLE':
+            self.intermed_param.b = self.compute_b()
             # Compute |Utilde_{mm'}|
             self.n_Utilde_Utilde = np.dot(self.Utilde, self.Utilde.T)
             np.fill_diagonal(self.n_Utilde_Utilde, 0)
+            
+            print('###############')
+            print('Took %0.1f seconds to compute |Utilde_i intersect Utilde_j|.' % (time.time()-old_time))
+            print('###############')
+            old_time = time.time()
             
             print('\nInitializing parameters and computing initial global embedding...')
         
             # Compute initial global embedding
             self.y_init, self.s_0, self.color_of_pts_on_tear_init = self.compute_initial_global_embedding()
+            
+            print('###############')
+            print('Took %0.1f seconds to compute initial global embedding.' % (time.time()-old_time))
+            print('###############')
+            old_time = time.time()
+            
             print('\nRefining parameters and computing final global embedding...')
             
             print('Using GPA...')
             self.y_final, self.color_of_pts_on_tear_final = self.compute_final_global_embedding(self.max_iter0,
                                                                                                 self.max_iter1)
+            print('###############')
+            print('Took %0.1f seconds to refine global embedding.' % (time.time()-old_time))
+            print('###############')
+            old_time = time.time()
         elif self.global_algo == 'LTSAP':
             print('Using LTSA Global Alignment...')
             self.y_final = self.compute_final_global_embedding_ltsap_based()
             self.color_of_pts_on_tear_final = None
+        
+        print('###############')
+        print('Took %0.1f seconds to perform step 3: compute global embedding.' % (time.time()-old_time0))
+        print('###############')
+        old_time0 = time.time()
     
     def search_for_tau_and_delta(self, tau_lim=[10,90], ntau=5, delta_lim=[0.1,0.9], ndelta=5):
         # Obtain eigenvalues and eigenvectors of graph Laplacian
@@ -488,9 +602,11 @@ class LDLE:
         self.U, epsilon = local_views_in_ambient_space(self.d_e, self.k)
         
         # Compute Atilde
-        if self.use_LLR:
+        if self.Atilde_method == 'LLR':
             self.grad_phi, self.Atilde = compute_Atilde_LLR(self.X, self.phi, self.d_e, self.U, epsilon, self.p, self.d)
-        else:
+        elif self.Atilde_method == 'LDLE_2':
+            self.grad_phi, self.Atilde = compute_Atilde_formula(self.X, self.phi, self.lmbda, self.d_e, self.U, epsilon, self.p, self.d)
+        else: #LDLE_1
             self.Atilde = compute_Atilde(self.phi, self.d_e, self.U, epsilon, self.p, self.d)
         
         # Compute gamma
@@ -660,9 +776,14 @@ class LDLE:
                         local_param.zeta[k] = zeta_kkp
                         new_param_of[k] = kp
                         param_changed_new[k] = 1
-                        
-            local_param.Psi_i = local_param.Psi_i[new_param_of,:]
-            local_param.Psi_gamma = local_param.Psi_gamma[new_param_of,:]
+            
+            if self.local_algo == 'LTSAP':
+                local_param.Psi = local_param.Psi[new_param_of,:,:]
+                local_param.mu = local_param.mu[new_param_of,:]
+            else:# default to LDLE
+                local_param.Psi_i = local_param.Psi_i[new_param_of,:]
+                local_param.Psi_gamma = local_param.Psi_gamma[new_param_of,:]
+                
             param_changed_old = param_changed_new
             N_replaced = np.sum(param_changed_new)
             
@@ -679,6 +800,7 @@ class LDLE:
         local_param = Param('LTSAP')
         local_param.X = self.X
         local_param.Psi = np.zeros((n,p,self.d))
+        local_param.mu = np.zeros((n,p))
         local_param.zeta = np.zeros(n)
 
         # iterate over points in the data
@@ -695,11 +817,16 @@ class LDLE:
             X_k = X_k - xbar_k
             X_k = X_k.T
             if p == self.d:
-                Q_k,_,_ = svd(X_k)
+                Q_k,Sigma_k,_ = svd(X_k)
             else:
-                Q_k,_,_ = svds(X_k, self.d, which='LM')
+                Q_k,Sigma_k,_ = svds(X_k, self.d, which='LM')
+                
+            local_param.Psi[k,:,:] = Q_k[:,:self.d]
+            local_param.mu[k,:] = xbar_k
             
-            local_param.Psi[k,:,:] = Q_k
+#             C_k = np.dot(X_k.T, X_k)
+#             local_param.H.append(eigh(C_k)[1][:, ::-1])
+#             local_param.H.append(svd(X_k.T, full_matrices=True)[0])
             
             # Compute zeta_{kk}
             local_param.zeta[k] = compute_zeta(self.d_e[np.ix_(U_k,U_k)], local_param.eval_(k, U_k))
@@ -727,9 +854,11 @@ class LDLE:
         n_C = np.zeros(n) + 1
         Utilde = np.copy(self.U)
         
+        old_time = time.time()
         # Vary eta from 2 to eta_{min}
         for eta in range(2,self.eta_min+1):
-            print('#nodes in views with sz < %d = %d' % (eta, np.sum(n_C[c]<eta)));
+            print('# non-empty views with sz < %d = %d' % (eta, np.sum((n_C > 0)*(n_C < eta))))
+            print('#nodes in views with sz < %d = %d' % (eta, np.sum(n_C[c]<eta)))
             
             # Compute cost_k and d_k (dest_k) for all k
             cost = np.zeros(n)+np.inf
@@ -768,6 +897,7 @@ class LDLE:
                 k = np.argmin(cost)
                 cost_star = cost[k]
             print('Remaining #nodes in views with sz < %d = %d' % (eta, np.sum(n_C[c]<eta)))
+            print('eta = %d, time passed = %0.1f' % (eta, (time.time()-old_time)))
         
         # Prune empty clusters
         non_empty_C = n_C > 0
@@ -777,6 +907,10 @@ class LDLE:
         c = old_to_new_map[c]
         n_C = n_C[non_empty_C]
         
+        # Construct a boolean array C s.t. C[m,i] = 1 if c_i == m, 0 otherwise
+        C = np.zeros((M,n), dtype=bool)
+        C[c, np.arange(n)] = True
+        
         # Compute intermediate views
         intermed_param = copy.deepcopy(self.local_param)
         if self.local_algo == 'LDLE':
@@ -784,13 +918,14 @@ class LDLE:
             intermed_param.Psi_gamma = self.local_param.Psi_gamma[non_empty_C,:]
         elif self.local_algo == 'LTSAP':
             intermed_param.Psi = self.local_param.Psi[non_empty_C,:]
+            intermed_param.mu = self.local_param.mu[non_empty_C,:]
             
         # intermed_param.b = self.local_param.b[non_empty_C]
         
         # Compute Utilde_m
         Utilde = np.zeros((M,n),dtype=bool)
         for m in range(M):
-            Utilde[m,:] = np.any(self.U[c==m,:], 0)
+            Utilde[m,:] = np.any(self.U[C[m,:],:], 0)
         
         self.Utilde = Utilde
         
@@ -802,13 +937,13 @@ class LDLE:
                                                         intermed_param.eval_(m, Utilde_m))
         
         print("After clustering, max distortion is %f" % (np.max(intermed_param.zeta)))
-        return c, n_C, Utilde, intermed_param
+        return C, c, n_C, Utilde, intermed_param
 
     def compute_b(self):
         M = self.Utilde.shape[0]
         b = np.zeros(M)
         for m in range(M):
-            Utilde_m = self.Utilde[m,:]==1
+            Utilde_m = self.Utilde[m,:]
             d_e_Utilde_m = self.d_e[np.ix_(Utilde_m,Utilde_m)]
             if d_e_Utilde_m.shape[0]==1:
                 b[m] = 1
@@ -835,7 +970,7 @@ class LDLE:
         # Iterate over pairs of overlapping intermediate views
         for m in range(M):
             if np.mod(m, print_freq)==0:
-                print('Ambiguous overlaps checked for %d points' % m)
+                print('Ambiguous overlaps checked for %d intermediate views' % m)
             for mp in np.where(n_Utilde_Utilde[m,:] > 0)[0].tolist():
                 if mp > m:
                     # Compute Utilde_{mm'}
@@ -862,15 +997,27 @@ class LDLE:
     
     def compute_Utildeg(self, y):
         M,n = self.Utilde.shape
-        d_e_ = squareform(pdist(y))
-        Ug, _ = local_views_in_ambient_space(d_e_, np.min([self.k * self.nu, d_e_.shape[0]-1]))
+        old_time = time.time()
+        d_e_ = squareform(pdist(y)) # O(n^2 d)
+        print('pdist(y) done. Time taken = %0.1f seconds.' % (time.time()-old_time))
+        old_time = time.time()
+        Ug, _ = local_views_in_ambient_space(d_e_, np.min([self.k * self.nu, d_e_.shape[0]-1])) # O(n(n+k log(n)))
+        print('Ug computed. Time taken = %0.1f seconds.' % (time.time()-old_time))
+        old_time = time.time()
         Utildeg = np.zeros((M,n),dtype=bool)
+        # O(n^2)
         for m in range(M):
-            Utildeg[m,:] = np.any(Ug[self.c==m,:], 0)
+            Utildeg[m,:] = np.any(Ug[self.C[m,:],:], 0)
+        
+        print('Utildeg computed. Time taken = %0.1f seconds.' % (time.time()-old_time))
+        old_time = time.time()
             
         # |Utildeg_{mm'}|
-        n_Utildeg_Utildeg = np.dot(Utildeg, Utildeg.T)
+        
+        n_Utildeg_Utildeg = np.dot(Utildeg, Utildeg.T) # O(M^2 n) = O(n^3/eta_min^2)
         np.fill_diagonal(n_Utildeg_Utildeg, 0)
+        
+        print('n_Utildeg_Utildeg computed. Time taken = %0.1f seconds.' % (time.time()-old_time))
             
         return Utildeg, n_Utildeg_Utildeg
        
@@ -879,7 +1026,8 @@ class LDLE:
     # Output Z_s is a subset of input Z_s.
     def compute_Z_s_to_tear(self, y, s, Z_s):
         n_Z_s = Z_s.shape[0]
-        C_s_U_C_Z_s = (self.c == s) | np.isin(self.c, Z_s)
+        # C_s_U_C_Z_s = (self.C[s,:]) | np.isin(self.c, Z_s)
+        C_s_U_C_Z_s = (self.C[s,:]) | np.any(self.C[Z_s,:], 0)
         c = self.c[C_s_U_C_Z_s]
         n_ = c.shape[0]
 
@@ -926,8 +1074,8 @@ class LDLE:
                     # Compute points on the overlap of m and m'th view
                     # which are in mth cluster and in m'th cluster. If
                     # both sets are non-empty then assign them same color.
-                    temp_m = temp[i,:] & (self.c==m)
-                    temp_mp = temp[i,:] & (self.c==mp)
+                    temp_m = temp[i,:] & (self.C[m,:])
+                    temp_mp = temp[i,:] & (self.C[mp,:])
                     if np.any(temp_m) and np.any(temp_mp):
                         color_of_pts_on_tear[temp_m|temp_mp] = cur_color
                         cur_color += 1
@@ -935,6 +1083,7 @@ class LDLE:
         return color_of_pts_on_tear
 
     def compute_initial_global_embedding(self, print_prop = 0.25):
+        old_time = time.time()
         # Intializations
         M,n = self.Utilde.shape
         d = self.d
@@ -947,14 +1096,16 @@ class LDLE:
 
         # Compute the sequence s in which intermediate views
         # are visited. rho[m] = predecessor of mth view.
-        seq, rho = self.compute_seq_of_intermediate_views()
+        seq, self.rho = self.compute_seq_of_intermediate_views()
 
         # Boolean array to keep track of already visited views
         is_visited = np.zeros(M, dtype=bool)
         is_visited[seq[0]] = True
 
-        C_s_0 = self.c==seq[0]
+        C_s_0 = self.C[seq[0],:]
         y[C_s_0,:] = self.intermed_param.eval_(seq[0], C_s_0)
+        
+        print('Naive initialization done. Time passed = %0.1f seconds.' % (time.time()-old_time))
 
         # Traverse views from 2nd view
         for m in range(1,M):
@@ -962,7 +1113,7 @@ class LDLE:
                 print('Initial alignment of %d views completed' % m)
             s = seq[m]
             # pth view is the parent of sth view
-            p = rho[s]
+            p = self.rho[s]
             Utilde_s = self.Utilde[s,:]
 
             # If to tear apart closed manifolds
@@ -976,7 +1127,7 @@ class LDLE:
                 self.intermed_param.T[s,:,:], self.intermed_param.v[s,:], err[s], _ = procrustes(V_s_p, V_p_s)
 
                 # Compute temporary global embedding of point in sth cluster
-                C_s = self.c==s
+                C_s = self.C[s,:]
                 y[C_s,:] = self.intermed_param.eval_(s, C_s)
 
                 # Find more views to align sth view with
@@ -1021,15 +1172,19 @@ class LDLE:
             is_visited[s] = True
 
             # Compute global embedding of point in sth cluster
-            C_s = self.c==s
+            C_s = self.C[s,:]
             y[C_s,:] = self.intermed_param.eval_(s, C_s)
 
         print('error:', np.mean(err))
+        
+        print('Better initialization done. Time passed = %0.1f seconds.' % (time.time()-old_time))
         
         if self.to_tear:
             color_of_pts_on_tear = self.compute_color_of_pts_on_tear(y)
         else:
             color_of_pts_on_tear = None
+            
+        print('Tear computation done. Time passed = %0.1f seconds.' % (time.time()-old_time))
         
         if self.vis is not None:
             v_opts = self.vis_y_options
@@ -1037,6 +1192,8 @@ class LDLE:
                                       color_of_pts_on_tear, v_opts['cmap1'],
                                       'Initial')
             plt.waitforbuttonpress(1)
+        
+        print('Plot done. Time passed = %0.1f seconds.' % (time.time()-old_time))
         
         return y, seq[0], color_of_pts_on_tear
     
@@ -1049,10 +1206,13 @@ class LDLE:
 
         y = np.copy(self.y_init)
         
+        old_time = time.time()
         # If to tear the closed manifolds
         if self.to_tear:
             # Compute |Utildeg_{mm'}|
             _, n_Utildeg_Utildeg = self.compute_Utildeg(y)
+            
+        print('n_Utildeg_Utildeg computed. Time passed = %0.1f seconds.' % (time.time()-old_time))
 
         # Refine global embedding y
         for it0 in range(max_iter0):
@@ -1068,7 +1228,7 @@ class LDLE:
                 for s in seq.tolist():
                     # Never refine s_0th intermediate view
                     if s == self.s_0:
-                        C_s = self.c==s
+                        C_s = self.C[s,:]
                         y[C_s,:] = self.intermed_param.eval_(s, C_s)
                         continue
 
@@ -1085,6 +1245,9 @@ class LDLE:
                         Z_s = self.n_Utilde_Utilde[s,:] > 0
 
                     Z_s = np.where(Z_s)[0].tolist()
+                    
+                    if len(Z_s) == 0:
+                        Z_s = [self.rho[s]]
 
                     # Compute centroid mu_s
                     # n_Utilde_s_Z_s[k] = #views in Z_s which contain
@@ -1102,6 +1265,7 @@ class LDLE:
                     # Compute T_s and v_s by aligning the embedding of the overlap
                     # between sth view and the views in Z_s, with the centroid mu_s
                     V_s_Z_s = self.intermed_param.eval_(s, temp)
+                    
                     T_s, v_s, err[s], b_s = procrustes(V_s_Z_s, mu_s, scaling=scaling)
 
                     # Update T_s, v_s
@@ -1110,14 +1274,18 @@ class LDLE:
                     self.intermed_param.b[s] *= b_s
 
                     # Compute global embedding of points in sth cluster
-                    C_s = self.c==s
+                    C_s = self.C[s,:]
                     y[C_s,:] = self.intermed_param.eval_(s, C_s)
+                    
+                print('it0=%d it1=%d completed. Time passed = %0.1f seconds.' % (it0, it1, (time.time()-old_time)))
 
             # If to tear the closed manifolds
             if self.to_tear:
                 # Compute |Utildeg_{mm'}|
                 _, n_Utildeg_Utildeg = self.compute_Utildeg(y)
+                print('it0=%d, n_Utildeg_Utildeg computed. Time passed = %0.1f seconds.' % (it0, time.time()-old_time))
                 color_of_pts_on_tear = self.compute_color_of_pts_on_tear(y, n_Utildeg_Utildeg)
+                print('it0=%d, color_of_pts_on_tear computed. Time passed = %0.1f seconds.' % (it0, time.time()-old_time))
             else:
                 color_of_pts_on_tear = None
             
@@ -1129,6 +1297,8 @@ class LDLE:
                                           color_of_pts_on_tear, v_opts['cmap1'],
                                           ('Iter_%d' % it0))
                 plt.waitforbuttonpress(1)
+            
+                print('it0=%d, plot done. Time passed = %0.1f seconds.' % (it0, time.time()-old_time))
 
         return y, color_of_pts_on_tear
     
@@ -1189,10 +1359,8 @@ class LDLE:
 
                     for mp in Z_s:
                         Utilde_s_mp = Utilde_s & self.Utilde[mp,:]
-                        V_s_mp = eval_param(self.phi, self.Psitilde_gamma, self.Psitilde_i,
-                                              s, Utilde_s_mp, self.btilde)
-                        V_mp_s = eval_param(self.phi, self.Psitilde_gamma, self.Psitilde_i,
-                                              mp, Utilde_s_mp, self.btilde)
+                        V_s_mp = self.intermed_param.eval(s, Utilde_s_mp)
+                        V_mp_s = self.intermed_param.eval(mp, Utilde_s_mp)
                         #pdb.set_trace()
                         loss = loss + torch.mean(torch.square(Tv[s](torch.from_numpy(V_s_mp)) - Tv[mp](torch.from_numpy(V_mp_s))))
 
@@ -1252,10 +1420,29 @@ class LDLE:
             Utilde_m = self.Utilde[m,:]
             n_Utilde_m = np.sum(Utilde_m)
             Theta_m = self.intermed_param.eval_(m, Utilde_m)
-            Theta_m = Theta_m - np.mean(Theta_m, axis=0)[np.newaxis,:]
+            Theta_m = Theta_m - np.mean(Theta_m,axis=0)[np.newaxis,:]
             Theta_m = Theta_m.T
             G_mG_mT = 1./n_Utilde_m + np.dot(np.linalg.pinv(Theta_m), Theta_m)
             B[np.ix_(Utilde_m,Utilde_m)] += np.eye(n_Utilde_m) - G_mG_mT
+            
+#             H_m, _ = qr(Theta_m)
+#             H_m = H_m[:,:d][:,::-1]
+                  
+#             Gm = np.zeros((n_Utilde_m, d + 1))
+#             # Gm[:, 1:] = self.intermed_param.H[m][:,:d]
+#             Gm[:, 1:] = H_m
+#             Gm[:, 0] = 1. / np.sqrt(n_Utilde_m)
 
-        _, y = eigsh(B, k=self.d+1, sigma=0.0, maxiter=5000)
-        return y[:,1:]
+#             GmGmT = np.dot(Gm, Gm.T)
+
+#             neighbors = np.where(Utilde_m)[0]
+#             nbrs_x, nbrs_y = np.meshgrid(neighbors, neighbors)
+#             B[nbrs_x, nbrs_y] -= GmGmT
+#             B[neighbors, neighbors] += 1
+
+        y,_ = null_space(B, d, k_skip=1, eigen_solver='auto', random_state=42)
+        v_opts = self.vis_y_options
+        self.vis.global_embedding(y, v_opts['labels'], v_opts['cmap0'],
+                                  None, v_opts['cmap1'],'LTSA')
+        plt.waitforbuttonpress(1)
+        return y

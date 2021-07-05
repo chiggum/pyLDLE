@@ -3,6 +3,8 @@ import os
 
 import numpy as np
 
+import matplotlib
+matplotlib.use('Qt4Agg')
 from matplotlib import pyplot as plt
 plt.rcParams.update({'scatter.marker':'.'})
 from matplotlib.widgets import Slider
@@ -48,6 +50,34 @@ def imscatter(x, y, image, ax=None, zoom=1):
     ax.autoscale()
     return artists
 
+def set_axes_equal(ax):
+    '''Make axes of 3D plot have equal scale so that spheres appear as spheres,
+    cubes as cubes, etc..  This is one possible solution to Matplotlib's
+    ax.set_aspect('equal') and ax.axis('equal') not working for 3D.
+
+    Input
+      ax: a matplotlib axis, e.g., as output from plt.gca().
+    '''
+
+    x_limits = ax.get_xlim3d()
+    y_limits = ax.get_ylim3d()
+    z_limits = ax.get_zlim3d()
+
+    x_range = abs(x_limits[1] - x_limits[0])
+    x_middle = np.mean(x_limits)
+    y_range = abs(y_limits[1] - y_limits[0])
+    y_middle = np.mean(y_limits)
+    z_range = abs(z_limits[1] - z_limits[0])
+    z_middle = np.mean(z_limits)
+
+    # The plot bounding box is a sphere in the sense of the infinity
+    # norm, hence I call half the max range the plot radius.
+    plot_radius = 0.5*max([x_range, y_range, z_range])
+
+    ax.set_xlim3d([x_middle - plot_radius, x_middle + plot_radius])
+    ax.set_ylim3d([y_middle - plot_radius, y_middle + plot_radius])
+    ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
+
 class Visualize:
     def __init__(self, save_dir=''):
         self.save_dir = save_dir
@@ -56,7 +86,7 @@ class Visualize:
                 os.makedirs(self.save_dir)
         pass
     
-    def data(self, X, labels, figsize=None, s=20):
+    def data(self, X, labels, title='Data', figsize=None, s=20):
         assert X.shape[1] <= 3, 'X.shape[1] must be either 2 or 3.'
         fig = plt.figure(figsize=figsize)
         figManager = plt.get_current_fig_manager()
@@ -66,11 +96,11 @@ class Visualize:
             plt.axis('image')
         elif X.shape[1] == 3:
             ax = fig.add_subplot(projection='3d')
-            ax.autoscale()
             ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=labels, cmap='jet')
-        plt.title('Data')
+            set_axes_equal(ax)
+        plt.title(title)
         if self.save_dir:
-            plt.savefig(self.save_dir+'/data.png') 
+            plt.savefig(self.save_dir+'/' + title + '.png') 
         
     def eigenvalues(self, lmbda, figsize=None):
         fig = plt.figure(figsize=figsize)
@@ -276,9 +306,13 @@ class Visualize:
     def distortion(self, X, zeta, title, figsize=None, s=20):
         assert X.shape[1] <= 3, 'X.shape[1] must be either 2 or 3.'
         fig = plt.figure(figsize=figsize)
-        figManager = plt.get_current_fig_manager()
-        figManager.window.showMaximized()
-        if X.shape[1] == 2:
+        #figManager = plt.get_current_fig_manager()
+        #figManager.window.showMaximized()
+        if X.shape[1] == 1:
+            plt.scatter(X[:,0], X[:,0], s=s, c=zeta, cmap='jet')
+            plt.axis('image')
+            plt.colorbar()
+        elif X.shape[1] == 2:
             plt.scatter(X[:,0], X[:,1], s=s, c=zeta, cmap='jet')
             plt.axis('image')
             plt.colorbar()
@@ -395,12 +429,13 @@ class Visualize:
         if self.save_dir:
             plt.savefig(self.save_dir+'/chosen_eigvecs_for_intermediate_views.png') 
     
-    def local_views(self, X, phi, U, gamma, Atilde, Psi_gamma, Psi_i, zeta, k=None, save_subdir='', figsize=None, s=20):
+    def local_views(self, X, phi, U, gamma, Atilde, Psi_gamma, Psi_i, zeta, k=None, save_subdir='', figsize=(8,15), s=20):
         assert X.shape[1] <= 3, 'X.shape[1] must be either 2 or 3.'
         is_3d_data = X.shape[1] == 3
         n,N = phi.shape
         
         fig = plt.figure(1, figsize=figsize)
+        fig.tight_layout()
         fig.canvas.mpl_connect('close_event', on_close)
         figManager = plt.get_current_fig_manager()
         figManager.window.showMaximized()
@@ -431,6 +466,7 @@ class Visualize:
         
         while True:
             plt.figure(1, figsize=figsize)
+            plt.tight_layout()
             if k_not_available:
                 to_exit = plt.waitforbuttonpress(timeout=20)
                 if to_exit:
@@ -469,8 +505,8 @@ class Visualize:
             ax[3].scatter(y[:,0], y[:,1], s=s, c='r')
             ax[3].scatter(y[U_k,0], y[U_k,1], s=s, c='k')
             ax[3].axis('image')
-            ax[3].set_title('$\\zeta_{%d%d}=%.3f\\'\
-                              ' \\Phi_{%d}(\\mathcal{M})$ in red and $\\Phi_{%d}(U_{%d})$ in black'\
+            ax[3].set_title('$\\zeta_{%d%d}=%.3f$\n'\
+                              '$\\Phi_{%d}(\\mathcal{M})$ in red\n$\\Phi_{%d}(U_{%d})$ in black'\
                               % (k, k, zeta[k], k, k, k))
             
             # Plot the chosen eigenvectors and scaled eigenvectors
@@ -502,7 +538,7 @@ class Visualize:
             ax[4].plot([0,100], [0,0], 'g-')
             ax[4].plot([0,100], [angles[Psi_i[k,0],Psi_i[k,1]]]*2, 'r-')
             ax[4].set_xlabel('percentiles')
-            ax[4].set_title('$|\\widetilde{A}_{%dij}|/(\\widetilde{A}_{%dii}\\widetilde{A}_{%djj})$' % (k, k, k))
+            ax[4].set_title('$\\cos(\\nabla\\phi_{i_1},\\nabla\\phi_{i_2})$')
             
             
             local_scales = gamma[[k],:].T*Atilde_kii
@@ -515,8 +551,8 @@ class Visualize:
             ax[5].plot([0,100], [np.log(2)]*2, 'g-')
             ax[5].plot([0,100], [dlocal_scales[Psi_i[k,0],Psi_i[k,1]]]*2, 'r-')
             ax[5].set_xlabel('percentiles')
-            ax[5].set_title('$\\log(\\gamma_{%di}\\sqrt{\\widetilde{A}_{%dii}} / \
-                      \\gamma_{%dj}\\sqrt{\\widetilde{A}_{%djj}}+1)$' % (k, k, k, k))
+            ax[5].set_title('$\\log(\\gamma_{i_1}\\left\\|\\nabla\\phi_{i_1}\\right\\|_2 / \
+                      \\gamma_{i_2}\\left\\|\\nabla\\phi_{i_2}\\right\\|_2+1)$')
                 
             fig.canvas.draw()
             fig.canvas.flush_events()
@@ -1053,6 +1089,9 @@ class Visualize:
     def global_embedding(self, y, labels, cmap0, color_of_pts_on_tear=None, cmap1=None,
                          title=None, figsize=None, s=30):
         d = y.shape[1]
+        if d == 1:
+            y = np.concatenate([y,y],axis=1)
+        d = y.shape[1]
         if d > 3:
             return
         
@@ -1101,9 +1140,25 @@ class Visualize:
             ax.scatter(y[:,0], y[:,1],
                        s=s, c=color_of_pts_on_tear, cmap=cmap1)
 
+        y_x_max = np.max(y[:,0])
+        y_x_min = np.min(y[:,0])
+        y_y_max = np.max(y[:,1])
+        y_y_min = np.min(y[:,1])
+        ax.set_xlim(y_x_min - 0.2*np.abs(y_x_min), y_x_max + 0.2*np.abs(y_x_max))
+        ax.set_ylim(y_y_min - 0.2*np.abs(y_y_min), y_x_max + 0.2*np.abs(y_y_max))
         ax.set_title(title)
-        ax.axis('off')
+        #ax.axis('off')
+        first_time = 1
         while True:
+            to_exit = plt.waitforbuttonpress(timeout=20)
+            if to_exit is None:
+                print('Timed out')
+                break
+
+            if to_exit:
+                plt.close()
+                return
+            
             y_k = plt.ginput(1)
             if len(y_k)==0:
                 break
@@ -1111,7 +1166,23 @@ class Visualize:
             k = np.argmin(np.sum((y-y_k)**2,1))
 
             #ax.plot(y[k,0], y[k,1], 'ro', markersize=10)
-            imscatter(y[k,0], y[k,1], X[k,:].reshape(img_shape).T, ax=ax, zoom=zoom)
+            
+            z = plt.ginput(1)
+            if len(z)==0:
+                break
+            z = np.array(z[0])[np.newaxis,:]
+            
+            if first_time:
+                first_time = 0
+                continue
+                
+            imscatter(z[0,0], z[0,1], X[k,:].reshape(img_shape).T, ax=ax, zoom=zoom)
+            
+            z = plt.ginput(1)
+            if len(z)==0:
+                break
+            z = np.array(z[0])[np.newaxis,:]
+            ax.quiver(y[k,0],y[k,1],z[0,0]-y[k,0],z[0,1]-y[k,1],units='xy',scale=1,width=0.3)
 
             if self.save_dir:
                 if not os.path.isdir(self.save_dir+'/ge_img'):

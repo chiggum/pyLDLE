@@ -1,15 +1,62 @@
+import pdb
+
 import numpy as np
 import scipy.integrate as integrate
 from scipy.optimize import fsolve
 from sklearn.datasets import fetch_openml
 import scipy
 from scipy.spatial.distance import cdist
+import pandas as pd
+from PIL import Image, ImageOps
+
+def read_img(fpath, grayscale=False, bbox=None):
+    if grayscale:
+        img = ImageOps.grayscale(Image.open(fpath))
+    else:
+        img = Image.open(fpath)
+    if bbox is not None:
+        return np.asarray(img.crop(bbox).reduce(2))
+    else:
+        return np.asarray(img.reduce(2))
 
 class Datasets:
     def __init__(self):
         pass
     
-    def rectanglegrid(self, ar=16, RES=100):
+    def linesegment(self, RES=100, noise=0):
+        np.random.seed(42)
+        L = 1
+        xv = np.linspace(0, L, RES)[:,np.newaxis]
+        yv = noise*np.random.randn(xv.shape[0],1)
+        X = np.concatenate([xv,yv],axis=1)
+        labelsMat = X[:,0][:,np.newaxis]
+        ddX = np.minimum(X,L-X).flatten()
+        print('X.shape = ', X.shape)
+        return X, labelsMat, ddX
+    
+    def circle(self, RES=100, noise=0):
+        np.random.seed(42)
+        theta = np.linspace(0, 2*np.pi, RES)[:-1]
+        xv = np.cos(theta)[:,np.newaxis]
+        yv = np.sin(theta)[:,np.newaxis]
+        X = np.concatenate([xv,yv], axis=1)
+        labelsMat = X
+        print('X.shape = ', X.shape)
+        return X, labelsMat, None
+    
+    def closedcurve_1(self, n=1000, noise=0):
+        t = 2.01*np.pi*np.random.uniform(0,1,n)
+        x = np.cos(t)
+        y = np.sin(2*t)
+        z = np.sin(3*t)
+        X = np.vstack([x,y,z])
+        X = np.transpose(X)
+        X += noise*np.random.randn(X.shape[0],X.shape[1])
+        labelsMat = X
+        print('X.shape = ', X.shape)
+        return X, labelsMat, None
+    
+    def rectanglegrid(self, ar=16, RES=100, noise=0, noise_type='uniform'):
         sideLx = np.sqrt(ar)
         sideLy = 1/sideLx
         RESx = int(sideLx*RES+1)
@@ -20,6 +67,16 @@ class Datasets:
         xv = xv.flatten('F')[:,np.newaxis]
         yv = yv.flatten('F')[:,np.newaxis]
         X = np.concatenate([xv,yv], axis=1)
+        if noise:
+            np.random.seed(42)
+            n = xv.shape[0]
+            if noise_type == 'normal':
+                n = xv.shape[0]
+                X = np.concatenate([X,np.zeros((n,1))], axis=1)
+                X = X + noise*np.random.normal(0,1,(n,3))
+            elif noise_type == 'uniform':
+                X = np.concatenate([X,noise*np.random.uniform(-1,1,(n,1))], axis=1)
+            
         labelsMat = X
         print('X.shape = ', X.shape)
         
@@ -160,6 +217,11 @@ class Datasets:
         heightv = heightv.flatten('F')[:,np.newaxis]
         tv = np.repeat(tv,RESh)[:,np.newaxis]
         X=np.concatenate([rmax*tv*np.cos(tv), heightv, rmax*tv*np.sin(tv)], axis=1)
+        
+        ddX11 = np.minimum(heightv, sideL2-heightv).flatten()
+        ddX12 = np.tile(tdistv[:,np.newaxis], RESh).flatten()
+        ddX12 = np.minimum(ddX12, sideL1-ddX12)
+        ddX1 = np.minimum(ddX11, ddX12)
 
         y_mid = sideL2*0.5
         t_min = np.min(tv)
@@ -171,17 +233,17 @@ class Datasets:
         hole = np.sqrt((X[:,0]-x_mid)**2+(X[:,1]-y_mid)**2+(X[:,2]-z_mid)**2)<0.1
 
         Xhole = X[hole,:]
-        ddX = np.min(cdist(X,Xhole), axis=1)
-        ddX[ddX<1e-2*1.2] = 0
+        ddX2 = np.min(cdist(X,Xhole), axis=1)
+        ddX2[ddX2<1e-2*1.2] = 0
         
         X = X[~hole,:]
-        ddX = ddX[~hole]
+        ddX = np.minimum(ddX1[~hole], ddX2[~hole])
         tv = tv[~hole]
         labelsMat = np.concatenate([tv, X[:,[1]]], axis=1)
         print('X.shape = ', X.shape)
         return X, labelsMat, ddX
     
-    def noisyswissroll(self, RES=100):
+    def noisyswissroll(self, RES=100, noise=0.01, noise_type = 'normal'):
         theta0 = 3*np.pi/2
         nturns = 2
         rmax = 2*1e-2
@@ -203,13 +265,15 @@ class Datasets:
         tv = np.repeat(tv,RESh)[:,np.newaxis]
         X=np.concatenate([rmax*tv*np.cos(tv), heightv, rmax*tv*np.sin(tv)], axis=1)
         np.random.seed(42)
-        noise = 0.05
-        X = X+noise*np.random.uniform(0,1,[X.shape[0],3]);
+        if noise_type == 'normal':
+            X = X+noise*np.random.normal(0,1,[X.shape[0],3])
+        elif noise_type == 'uniform':
+            X = X+noise*np.random.uniform(0,1,[X.shape[0],3])
         labelsMat = np.concatenate([tv, X[:,[1]]], axis=1)
         print('X.shape = ', X.shape)
         return X, labelsMat, None
         
-    def sphere(self, n=10000):
+    def sphere(self, n=10000, noise = 0):
         R = np.sqrt(1/(4*np.pi))
         indices = np.arange(n)+0.5
         phiv = np.arccos(1 - 2*indices/n)
@@ -220,6 +284,8 @@ class Datasets:
                             np.sin(phiv)*np.sin(thetav),
                             np.cos(phiv)], axis=1)
         X = X*R;
+        np.random.seed(2)
+        X = X*(1+noise*np.random.uniform(-1,1,(X.shape[0],1)))
         labelsMat = np.concatenate([np.mod(thetav,2*np.pi), phiv], axis=1)
         print('X.shape = ', X.shape)
         return X, labelsMat, None
@@ -241,7 +307,7 @@ class Datasets:
         print('X.shape = ', X.shape)
         return X, labelsMat, None
     
-    def curvedtorus3d(self, n=10000):
+    def curvedtorus3d(self, n=10000, noise=0):
         Rmax=0.25;
         rmax=1/(4*(np.pi**2)*Rmax);
         X = []
@@ -260,9 +326,11 @@ class Datasets:
         
         thetav = np.array(thetav)[:,np.newaxis]
         phiv = np.array(phiv)[:,np.newaxis]
-        X = np.concatenate([(Rmax+rmax*np.cos(thetav))*np.cos(phiv),
-                             (Rmax+rmax*np.cos(thetav))*np.sin(phiv),
-                             rmax*np.sin(thetav)], axis=1)
+        np.random.seed(42)
+        noise = noise*np.random.uniform(-1,1,(phiv.shape[0],1))
+        X = np.concatenate([(Rmax+(1+noise)*rmax*np.cos(thetav))*np.cos(phiv),
+                             (Rmax+(1+noise)*rmax*np.cos(thetav))*np.sin(phiv),
+                             (1+noise)*rmax*np.sin(thetav)], axis=1)
         labelsMat = np.concatenate([thetav, phiv], axis=1)
         print('X.shape = ', X.shape)
         return X, labelsMat, None
@@ -303,8 +371,25 @@ class Datasets:
         print('X.shape = ', X.shape)
         return X, labelsMat, None
     
-    def floor(self, noise=0.01, n_transmitters = 42, eps = 1):
-        data = scipy.io.loadmat('D:/pyLDLE/floor/floor.mat')
+    def twinpeaks(self, n=10000, noise=0, ar=4):
+        np.random.seed(42)
+        s_ = 2
+        t_ = 2*ar
+        t = np.random.uniform(-t_/2,t_/2,(n,1))
+        s = np.random.uniform(-s_/2,s_/2,(n,1))
+        h = 0.3*(1-t**2)*np.exp(-t**2-(s+1)**2)-\
+            (0.2*t-np.power(t,3)-np.power(s,5))*np.exp(-t**2-s**2)-\
+            0.1*np.exp(-(t+1)**2-s**2)
+        
+        eta = noise * np.random.normal(0,1,(n,1))
+        X = np.concatenate([t,s,h+eta],axis=1)
+        labelsMat = np.concatenate([t,s], axis=1)
+        print('X.shape = ', X.shape)
+        return X, labelsMat, None
+        
+    
+    def floor(self, fpath, noise=0.01, n_transmitters = 42, eps = 1):
+        data = scipy.io.loadmat(fpath)
         X = data['X']
         np.random.seed(42)
         X = X + np.random.uniform(0, 1, X.shape)*noise
@@ -347,9 +432,9 @@ class Datasets:
         X = []
         y = []
         for digit in digits:
-            X = X0[y0 == str(digit),:]
-            X = X[:n,:]
-            X.append(X)
+            X_ = X0[y0 == str(digit),:]
+            X_= X_[:n,:]
+            X.append(X_)
             y.append(np.zeros(n)+digit)
             
         X = np.concatenate(X, axis=0)
@@ -358,12 +443,63 @@ class Datasets:
         print('X.shape = ', X.shape)
         return X, labelsMat, None
     
-    def face_data(self, pc=False):
-        data = scipy.io.loadmat('D:/face_data/face_data.mat')
+    def face_data(self, fpath, pc=False):
+        data = scipy.io.loadmat(fpath)
         if pc:
             X = data['image_pcs'].transpose()
         else:
             X = data['images'].transpose()
         labelsMat = np.concatenate([data['lights'].transpose(), data['poses'].transpose()], axis=1)
+        print('X.shape = ', X.shape)
+        return X, labelsMat, None
+    
+    def puppets_data(self, dirpath, prefix='s1', n=None, bbox=None, grayscale=False, normalize = False):
+        import numpy as np
+        import os
+        import scipy.misc
+        import matplotlib.image as mpimg
+        X = []
+        labels = []
+        fnames = []
+        for fname in sorted(os.listdir(dirpath)):
+            if prefix in fname:
+                fnames.append(fname)
+        
+        if n is not None:
+            fnames = fnames[:n]
+            
+        for fname in fnames:
+            X_k = read_img(dirpath+'/'+fname, bbox=bbox, grayscale=grayscale)
+            X.append(X_k.T.flatten())
+            labels.append(int(fname.split('.')[0].split('_')[1])-100000)
+        X = np.array(X)
+        labels = np.array(labels)[:,np.newaxis]-1
+        labelsMat = np.concatenate([labels,labels], axis=1)
+#         m1 = X.shape[0]/310
+#         m2 = 91
+#         m3 = 89
+#         if prefix=='s1':
+#             labelsMat = np.concatenate([np.mod(labels,m1), np.mod(labels,m2)], axis=1)
+#         elif prefix=='s2':
+#             labelsMat = np.concatenate([np.mod(labels,m2), np.mod(labels,m3)], axis=1)
+        if normalize:
+            X = X - np.mean(X,axis=0)[np.newaxis,:]
+            X = X / (np.std(X,axis=0)[np.newaxis,:] + 1e-12)
+        print('X.shape = ', X.shape)
+        return X, labelsMat, None
+        
+    
+    def soils88(self, labels_path, X_path):
+        df2 = pd.read_csv(X_path, sep='\t')
+        df2 = df2.sort_values(by='Unnamed: 0').reset_index(drop=True)
+        sample_names = df2['Unnamed: 0'].tolist()
+        X = df2.to_numpy()[:,1:]
+        
+        df1 = pd.read_csv(labels_path, sep='\t')
+        mask = df1['sample_name'].apply(lambda x: x in sample_names)
+        df1 = df1[mask].reset_index(drop=True)
+        df1 = df1.sort_values(by='sample_name').reset_index(drop=True)
+        labelsMat = df1.to_numpy()[:,1:]
+        
         print('X.shape = ', X.shape)
         return X, labelsMat, None
