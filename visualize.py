@@ -4,7 +4,8 @@ import os
 import numpy as np
 
 import matplotlib
-matplotlib.use('Qt4Agg')
+print('matplotlib.get_backend() = ', matplotlib.get_backend())
+#matplotlib.use('Qt4Agg')
 from matplotlib import pyplot as plt
 plt.rcParams.update({'scatter.marker':'.'})
 from matplotlib.widgets import Slider
@@ -32,6 +33,61 @@ plt.rc('xtick', labelsize=SMALL_SIZE)    # fontsize of the tick labels
 plt.rc('ytick', labelsize=SMALL_SIZE)    # fontsize of the tick labels
 plt.rc('legend', fontsize=MEDIUM_SIZE)    # legend fontsize
 plt.rc('figure', titlesize=BIGGER_SIZE)  # fontsize of the figure title
+
+
+# colorcube colormap taken from matlab
+def colorcube(m):
+    nrgsteps = np.fix(np.power(m,1/3)+np.finfo(np.float32).eps)
+    extra = m-np.power(nrgsteps,3)
+    if (extra == 0) and (nrgsteps > 2):
+        nbsteps = nrgsteps - 1
+    else:
+        nbsteps = nrgsteps
+
+    rgstep = 1/(nrgsteps-1)
+    bstep  = 1/(nbsteps-1)
+    [r,g,b] = np.meshgrid(np.arange(nrgsteps)*rgstep,
+                          np.arange(nrgsteps)*rgstep,
+                          np.arange(nbsteps)*bstep)
+    r = r.flatten('F')[:,np.newaxis]
+    g = g.flatten('F')[:,np.newaxis]
+    b = b.flatten('F')[:,np.newaxis]
+    mymap = np.concatenate([r,g,b], axis=1)
+    
+    
+
+    diffmap = np.diff(mymap.T, axis=0).T
+    summap = np.sum(np.abs(diffmap),1)
+    notgrays = (summap != 0)
+    mymap = mymap[notgrays,:]
+
+    summap = np.concatenate([np.sum(mymap[:,[0,1]],1)[:,np.newaxis],
+                             np.sum(mymap[:,[1,2]],1)[:,np.newaxis],
+                             np.sum(mymap[:,[0,2]],1)[:,np.newaxis]], axis=1)
+    mymap = mymap[np.min(summap,axis=1) != 0,:]
+    
+    remlen = m - mymap.shape[0] - 1
+
+    rgbnsteps = np.floor(remlen / 4)
+    knsteps   = remlen - 3*rgbnsteps
+
+    rgbstep = 1/(rgbnsteps)
+    kstep   = 1/(knsteps  )
+
+    rgbramp = np.arange(0,rgbnsteps)*rgbstep + rgbstep
+    rgbzero = np.zeros((rgbramp.shape[0], 1))
+    kramp   = np.arange(0,knsteps)*kstep + kstep
+    
+    rgbramp = rgbramp[:,np.newaxis]
+    kramp = kramp[:,np.newaxis]
+
+    mymap = np.concatenate([mymap,
+                            np.concatenate([rgbramp, rgbzero, rgbzero], axis=1),
+                            np.concatenate([rgbzero, rgbramp, rgbzero], axis=1),
+                            np.concatenate([rgbzero, rgbzero, rgbramp], axis=1),
+                            np.zeros((1,3)),
+                            np.concatenate([kramp, kramp, kramp,], axis=1)], axis=0)
+    return mymap
 
 def on_close(event):
     raise RuntimeError("Figure closed.")
@@ -89,8 +145,9 @@ class Visualize:
     def data(self, X, labels, title='Data', figsize=None, s=20):
         assert X.shape[1] <= 3, 'X.shape[1] must be either 2 or 3.'
         fig = plt.figure(figsize=figsize)
-        figManager = plt.get_current_fig_manager()
-        figManager.window.showMaximized()
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
         if X.shape[1] == 2:
             plt.scatter(X[:,0], X[:,1], s=s, c=labels, cmap='jet')
             plt.axis('image')
@@ -104,8 +161,9 @@ class Visualize:
         
     def eigenvalues(self, lmbda, figsize=None):
         fig = plt.figure(figsize=figsize)
-        figManager = plt.get_current_fig_manager()
-        figManager.window.showMaximized()
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
         plt.plot(lmbda, 'o-')
         plt.ylabel('$\lambda_i$')
         plt.xlabel('i')
@@ -116,17 +174,17 @@ class Visualize:
     def gamma(self, X, gamma, i, figsize=None, s=20):
         assert X.shape[1] <= 3, 'X.shape[1] must be either 2 or 3.'
         fig = plt.figure(figsize=figsize)
-        figManager = plt.get_current_fig_manager()
-        figManager.window.showMaximized()
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
         if X.shape[1] == 2:
             plt.scatter(X[:,0], X[:,1], s=s, c=gamma[:,i], cmap='jet')
             plt.axis('image')
             plt.colorbar()
         elif X.shape[1] == 3:
             ax = fig.add_subplot(projection='3d')
-            ax.autoscale()
-            #ax.set_aspect('equal')
             p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=gamma[:,i], cmap='jet')
+            set_axes_equal(ax)
             fig.colorbar(p)
         plt.title('$\gamma_{%d}$'%i)
         if self.save_dir:
@@ -137,17 +195,17 @@ class Visualize:
     def eigenvector(self, X, phi, i, figsize=None, s=20):
         assert X.shape[1] <= 3, 'X.shape[1] must be either 2 or 3.'
         fig = plt.figure(figsize=figsize)
-        figManager = plt.get_current_fig_manager()
-        figManager.window.showMaximized()
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
         if X.shape[1] == 2:
             plt.scatter(X[:,0], X[:,1], s=s, c=phi[:,i], cmap='jet')
             plt.axis('image')
             plt.colorbar()
         elif X.shape[1] == 3:
             ax = fig.add_subplot(projection='3d')
-            ax.autoscale()
-            #ax.set_aspect('equal')
             p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=phi[:,i], cmap='jet')
+            set_axes_equal(ax)
             fig.colorbar(p)
         plt.title('$\phi_{%d}$'%i)
         if self.save_dir:
@@ -158,8 +216,9 @@ class Visualize:
     def grad_phi(self, X, phi, grad_phi, i, prop=0.01, figsize=None, s=20):
         assert X.shape[1] <= 3, 'X.shape[1] must be either 2 or 3.'
         fig = plt.figure(figsize=figsize)
-        figManager = plt.get_current_fig_manager()
-        figManager.window.showMaximized()
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
         n = X.shape[0]
         np.random.seed(42)
         
@@ -179,13 +238,13 @@ class Visualize:
             plt.title('$\\nabla\\phi_{%d}$'%i)
         elif X.shape[1] == 3:
             ax = fig.add_subplot(121,projection='3d')
-            ax.autoscale()
             p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=phi[:,i], cmap='jet')
+            set_axes_equal(ax)
             fig.colorbar(p, ax=ax)
             plt.title('$\phi_{%d}$'%i)
             ax = fig.add_subplot(122,projection='3d')
-            ax.autoscale()
             p = ax.quiver(X[mask,0], X[mask,1], X[mask,2], grad_phi[mask,i,0], grad_phi[mask,i,1], grad_phi[mask,i,2])
+            set_axes_equal(ax)
             plt.title('$\\nabla\phi_{%d}$'%i)
         
         if self.save_dir:
@@ -196,8 +255,9 @@ class Visualize:
     def Atilde(self, X, phi, i, j, Atilde, figsize=None, s=20):
         assert X.shape[1] <= 3, 'X.shape[1] must be either 2 or 3.'
         fig = plt.figure(figsize=figsize)
-        figManager = plt.get_current_fig_manager()
-        figManager.window.showMaximized()
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
         if X.shape[1] == 2:
             plt.subplot(131)
             plt.scatter(X[:,0], X[:,1], s=s, c=phi[:,i], cmap='jet')
@@ -218,16 +278,17 @@ class Visualize:
             ax = fig.add_subplot(131,projection='3d')
             ax.autoscale()
             p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=phi[:,i], cmap='jet')
+            set_axes_equal(ax)
             fig.colorbar(p, ax=ax)
             plt.title('$\phi_{%d}$'%i)
             ax = fig.add_subplot(132,projection='3d')
-            ax.autoscale()
             p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=phi[:,i], cmap='jet')
+            set_axes_equal(ax)
             fig.colorbar(p, ax=ax)
             plt.title('$\phi_{%d}$'%j)
             ax = fig.add_subplot(133,projection='3d')
-            ax.autoscale()
             p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=Atilde[:,i,j], cmap='jet')
+            set_axes_equal(ax)
             fig.colorbar(p, ax=ax)
             plt.title('$\widetilde{A}_{:%d%d}$'%(i,j))
         
@@ -239,12 +300,15 @@ class Visualize:
     def n_eigvecs_w_grad_lt(self, X, Atilde, figsize=None, s=20):
         assert X.shape[1] <= 3, 'X.shape[1] must be either 2 or 3.'
         fig = plt.figure(figsize=figsize)
-        figManager = plt.get_current_fig_manager()
-        figManager.window.showMaximized()
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
         
         if X.shape[1] == 3:
             ax = fig.add_subplot(122,projection='3d')
-            cb = None
+        elif X.shape[1] == 2:
+            ax = fig.add_subplot(122)
+        cb = None
         
         Atilde_diag = np.diagonal(Atilde, axis1=1, axis2=2)
         
@@ -283,16 +347,18 @@ class Visualize:
             n_grad_lt = np.sum(Atilde_diag < thresh, 1)
         
             if X.shape[1] == 2:
-                plt.subplot(122)
-                plt.cla()
-                plt.scatter(X[:,0], X[:,1], s=s, c=n_grad_lt, cmap='jet')
-                plt.axis('image')
-                plt.colorbar()
-                plt.title('$n_k = \sum_{i}\widetilde{A}_{kii} < %f$'% thresh)
+                ax.cla()
+                p = ax.scatter(X[:,0], X[:,1], s=s, c=n_grad_lt, cmap='jet')
+                ax.axis('image')
+                if cb is not None:
+                    cb.remove()
+                cb = fig.colorbar(p, ax=ax)
+                ax.set_title('$n_k = \sum_{i}\widetilde{A}_{kii} < %f$'% thresh)
             elif X.shape[1] == 3:
                 ax.cla()
                 ax.autoscale()
                 p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=n_grad_lt, cmap='jet')
+                set_axes_equal(ax)
                 if cb is not None:
                     cb.remove()
                 cb = fig.colorbar(p, ax=ax)
@@ -306,8 +372,9 @@ class Visualize:
     def distortion(self, X, zeta, title, figsize=None, s=20):
         assert X.shape[1] <= 3, 'X.shape[1] must be either 2 or 3.'
         fig = plt.figure(figsize=figsize)
-        #figManager = plt.get_current_fig_manager()
-        #figManager.window.showMaximized()
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
         if X.shape[1] == 1:
             plt.scatter(X[:,0], X[:,0], s=s, c=zeta, cmap='jet')
             plt.axis('image')
@@ -318,18 +385,25 @@ class Visualize:
             plt.colorbar()
         elif X.shape[1] == 3:
             ax = fig.add_subplot(projection='3d')
-            ax.autoscale()
             p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=zeta, cmap='jet')
+            set_axes_equal(ax)
             fig.colorbar(p)
         plt.title(title)
         if self.save_dir:
             plt.savefig(self.save_dir+'/'+title+'.png') 
-            
+    
+    def distortion_boxplot(self, zeta, title, figsize=None):
+        fig = plt.figure(figsize=figsize)
+        plt.boxplot([zeta],labels=[title], notch=True, patch_artist=True)
+        if self.save_dir:
+            plt.savefig(self.save_dir+'/box_'+title+'.png') 
+    
     def dX(self, X, ddX, title, figsize=None, s=20):
         assert X.shape[1] <= 3, 'X.shape[1] must be either 2 or 3.'
         fig = plt.figure(figsize=figsize)
-        figManager = plt.get_current_fig_manager()
-        figManager.window.showMaximized()
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
         if X.shape[1] == 2:
             plt.subplot(121)
             plt.scatter(X[:,0], X[:,1], s=s, c=ddX, cmap='jet')
@@ -342,11 +416,12 @@ class Visualize:
         elif X.shape[1] == 3:
             ax = fig.add_subplot(121, projection='3d')
             p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=ddX, cmap='jet')
+            set_axes_equal(ax)
             fig.colorbar(p, ax=ax)
             ax.set_title('distance from dX')
-            
             ax = fig.add_subplot(122, projection='3d')
             p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=ddX==0, cmap='jet')
+            set_axes_equal(ax)
             fig.colorbar(p, ax=ax)
             ax.set_title('dX')
             
@@ -362,69 +437,73 @@ class Visualize:
             plt.colorbar()
         elif X.shape[1] == 3:
             ax = fig.add_subplot(projection='3d')
-            ax.autoscale()
             p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=chi, cmap='jet')
+            set_axes_equal(ax)
             fig.colorbar(p)
         plt.title('\chi')
     
     def chosen_eigevec_inds_for_local_views(self, X, Psi_i, figsize=None, s=20):
         assert X.shape[1] <= 3, 'X.shape[1] must be either 2 or 3.'
-        fig = plt.figure(figsize=figsize)
-        figManager = plt.get_current_fig_manager()
-        figManager.window.showMaximized()
+        fig = plt.figure(1, figsize=figsize)
+        fig.tight_layout()
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
         if X.shape[1] == 2:
             plt.subplot(211)
             plt.scatter(X[:,0], X[:,1], s=s, c=Psi_i[:,0], cmap='jet')
             plt.axis('image')
             plt.colorbar()
-            plt.title('\\phi_{i_1}')
+            plt.title('$\\phi_{i_1}$')
             plt.subplot(212)
             plt.scatter(X[:,0], X[:,1], s=s, c=Psi_i[:,1], cmap='jet')
             plt.axis('image')
             plt.colorbar()
-            plt.title('\\phi_{i_2}')
+            plt.title('$\\phi_{i_2}$')
         elif X.shape[1] == 3:
             ax = fig.add_subplot(211, projection='3d')
-            ax.autoscale()
             p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=Psi_i[:,0], cmap='jet')
+            set_axes_equal(ax)
             fig.colorbar(p)
-            ax.set_title('\\phi_{i_1}')
+            ax.set_title('$\\phi_{i_1}$')
             ax = fig.add_subplot(212, projection='3d')
-            ax.autoscale()
             p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=Psi_i[:,1], cmap='jet')
+            set_axes_equal(ax)
             fig.colorbar(p)
-            ax.set_title('\\phi_{i_2}')
+            ax.set_title('$\\phi_{i_2}$')
         
         if self.save_dir:
             plt.savefig(self.save_dir+'/chosen_eigvecs_for_local_views.png') 
     
     def chosen_eigevec_inds_for_intermediate_views(self, X, Psitilde_i, c, figsize=None, s=20):
         assert X.shape[1] <= 3, 'X.shape[1] must be either 2 or 3.'
-        fig = plt.figure(figsize=figsize)
-        figManager = plt.get_current_fig_manager()
-        figManager.window.showMaximized()
+        fig = plt.figure(1, figsize=figsize)
+        fig.tight_layout()
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
         if X.shape[1] == 2:
             plt.subplot(211)
             plt.scatter(X[:,0], X[:,1], s=s, c=Psitilde_i[c,0], cmap='jet')
             plt.axis('image')
             plt.colorbar()
-            plt.title('\\phi_{i_1}')
+            plt.title('$\\phi_{i_1}$')
             plt.subplot(212)
             plt.scatter(X[:,0], X[:,1], s=s, c=Psitilde_i[c,1], cmap='jet')
             plt.axis('image')
             plt.colorbar()
-            plt.title('\\phi_{i_2}')
+            plt.title('$\\phi_{i_2}$')
         elif X.shape[1] == 3:
             ax = fig.add_subplot(211, projection='3d')
-            ax.autoscale()
             p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=Psitilde_i[c,0], cmap='jet')
+            set_axes_equal(ax)
             fig.colorbar(p)
-            plt.title('\\phi_{i_1}')
+            plt.title('$\\phi_{i_1}$')
             ax = fig.add_subplot(212, projection='3d')
-            ax.autoscale()
             p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=Psitilde_i[c,1], cmap='jet')
+            set_axes_equal(ax)
             fig.colorbar(p)
-            ax.set_title('\\phi_{i_2}')
+            ax.set_title('$\\phi_{i_2}$')
         
         if self.save_dir:
             plt.savefig(self.save_dir+'/chosen_eigvecs_for_intermediate_views.png') 
@@ -437,8 +516,9 @@ class Visualize:
         fig = plt.figure(1, figsize=figsize)
         fig.tight_layout()
         fig.canvas.mpl_connect('close_event', on_close)
-        figManager = plt.get_current_fig_manager()
-        figManager.window.showMaximized()
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
         
         cb = [None, None, None]
         ax = []
@@ -449,6 +529,7 @@ class Visualize:
                 ax.append(fig.add_subplot(231+i))
                                         
             p = ax[0].scatter(X[:,0], X[:,1], X[:,2], s=s, c=zeta, cmap='jet')
+            set_axes_equal(ax[0])
         else:
             for i in range(6):
                 ax.append(fig.add_subplot(231+i))
@@ -465,8 +546,8 @@ class Visualize:
         k_not_available = k is None
         
         while True:
-            plt.figure(1, figsize=figsize)
-            plt.tight_layout()
+            fig = plt.figure(1, figsize=figsize)
+            fig.tight_layout()
             if k_not_available:
                 to_exit = plt.waitforbuttonpress(timeout=20)
                 if to_exit:
@@ -490,6 +571,7 @@ class Visualize:
             if is_3d_data:
                 p = ax[0].scatter(X[:,0], X[:,1], X[:,2], s=s*(1-U_k), c=zeta, cmap='jet')
                 ax[0].scatter(X[U_k,0], X[U_k,1], X[U_k,2], s=s, c='k')
+                set_axes_equal(ax[0])
             else:
                 p = ax[0].scatter(X[:,0], X[:,1], s=s*(1-U_k), c=zeta, cmap='jet')
                 ax[0].scatter(X[U_k,0], X[U_k,1], s=s, c='k')
@@ -519,6 +601,7 @@ class Visualize:
                 if is_3d_data:
                     p = ax[j+1].scatter(X[:,0], X[:,1], X[:,2], s=s*(1-U_k), c=phi[:,i_s], cmap='jet')
                     ax[j+1].scatter(X[U_k,0], X[U_k,1], X[U_k,2], s=s, c='k')
+                    set_axes_equal(ax[j+1])
                 else:
                     p = ax[j+1].scatter(X[:,0], X[:,1], s=s*(1-U_k), c=phi[:,i_s], cmap='jet')
                     ax[j+1].scatter(X[U_k,0], X[U_k,1], s=s, c='k')
@@ -572,8 +655,9 @@ class Visualize:
         
         fig = plt.figure(1, figsize=figsize)
         fig.canvas.mpl_connect('close_event', on_close)
-        figManager = plt.get_current_fig_manager()
-        figManager.window.showMaximized()
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
         
         cb = [None, None, None]
         ax = []
@@ -584,6 +668,7 @@ class Visualize:
                 ax.append(fig.add_subplot(231+i))
                                         
             p = ax[0].scatter(X[:,0], X[:,1], X[:,2], s=s, c=zeta, cmap='jet')
+            set_axes_equal(ax[0])
         else:
             for i in range(6):
                 ax.append(fig.add_subplot(231+i))
@@ -621,6 +706,7 @@ class Visualize:
             if is_3d_data:
                 p = ax[0].scatter(X[:,0], X[:,1], X[:,2], s=s*(1-U_k), c=zeta, cmap='jet')
                 ax[0].scatter(X[U_k,0], X[U_k,1], X[U_k,2], s=s, c='k')
+                set_axes_equal(ax[0])
             else:
                 p = ax[0].scatter(X[:,0], X[:,1], s=s*(1-U_k), c=zeta, cmap='jet')
                 ax[0].scatter(X[U_k,0], X[U_k,1], s=s, c='k')
@@ -650,6 +736,7 @@ class Visualize:
                 if is_3d_data:
                     p = ax[j+1].scatter(X[:,0], X[:,1], X[:,2], s=s*(1-U_k), c=phi[:,i_s], cmap='jet')
                     ax[j+1].scatter(X[U_k,0], X[U_k,1], X[U_k,2], s=s, c='k')
+                    set_axes_equal(ax[j+1])
                 else:
                     p = ax[j+1].scatter(X[:,0], X[:,1], s=s*(1-U_k), c=phi[:,i_s], cmap='jet')
                     ax[j+1].scatter(X[U_k,0], X[U_k,1], s=s, c='k')
@@ -703,8 +790,9 @@ class Visualize:
         
         fig = plt.figure(1, figsize=figsize)
         fig.canvas.mpl_connect('close_event', on_close)
-        figManager = plt.get_current_fig_manager()
-        figManager.window.showMaximized()
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
         
         cb = [None, None, None]
         ax = []
@@ -714,6 +802,7 @@ class Visualize:
             for i in range(3,6):
                 ax.append(fig.add_subplot(231+i))
             p = ax[0].scatter(X[:,0], X[:,1], X[:,2], s=s, c=zeta, cmap='jet')
+            set_axes_equal(ax[0])
         else:
             for i in range(6):
                 ax.append(fig.add_subplot(231+i))
@@ -757,8 +846,9 @@ class Visualize:
             if is_3d_data:
                 p = ax[0].scatter(X[:,0], X[:,1], X[:,2], s=s*(1-Utilde_m), c=zeta, cmap='jet')
                 ax[0].scatter(X[Utilde_m,0], X[Utilde_m,1], X[Utilde_m,2], s=s, c='k')
+                set_axes_equal(ax[0])
             else:
-                ax[0].scatter(X[:,0], X[:,1], s=s*(1-Utilde_m), c=zeta, cmap='jet')
+                p = ax[0].scatter(X[:,0], X[:,1], s=s*(1-Utilde_m), c=zeta, cmap='jet')
                 ax[0].scatter(X[Utilde_m,0], X[Utilde_m,1], s=s, c='k')
                 ax[0].axis('image')
             
@@ -786,6 +876,7 @@ class Visualize:
                 if is_3d_data:
                     p = ax[j+1].scatter(X[:,0], X[:,1], X[:,2], s=s*(1-Utilde_m), c=phi[:,i_s], cmap='jet')
                     ax[j+1].scatter(X[Utilde_m,0], X[Utilde_m,1], X[Utilde_m,2], s=s, c='k')
+                    set_axes_equal(ax[j+1])
                 else:
                     p = ax[j+1].scatter(X[:,0], X[:,1], s=s*(1-Utilde_m), c=phi[:,i_s], cmap='jet')
                     ax[j+1].scatter(X[Utilde_m,0], X[Utilde_m,1], s=s, c='k')
@@ -846,8 +937,9 @@ class Visualize:
         
         fig = plt.figure(1, figsize=figsize)
         fig.canvas.mpl_connect('close_event', on_close)
-        figManager = plt.get_current_fig_manager()
-        figManager.window.showMaximized()
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
         
         ax = []
         if is_3d_data:
@@ -857,7 +949,7 @@ class Visualize:
             for i in range(3,6):
                 ax.append(fig.add_subplot(321+i))
             p = ax[0].scatter(X[:,0], X[:,1], X[:,2], s=s, c=zeta, cmap='jet')
-            ax[0].autoscale()
+            set_axes_equal(ax[0])
         else:
             for i in range(6):
                 ax.append(fig.add_subplot(321+i))
@@ -907,7 +999,7 @@ class Visualize:
             if is_3d_data:
                 ax[2].scatter(X[low_dist_mask,0], X[low_dist_mask,1], X[low_dist_mask,2], s=s, c='b')
                 ax[2].scatter(X[high_dist_mask,0], X[high_dist_mask,1], X[high_dist_mask,2], s=s, c='r')
-                ax[2].autoscale()
+                set_axes_equal(ax[2])
             else:
                 ax[2].scatter(X[low_dist_mask,0], X[low_dist_mask,1], s=s, c='b')
                 ax[2].scatter(X[high_dist_mask,0], X[high_dist_mask,1], s=s, c='r')
@@ -932,13 +1024,13 @@ class Visualize:
             fig.canvas.draw()
             fig.canvas.flush_events()
             if self.save_dir:
-                if not os.path.isdir(self.save_dir+'/local_high_low_distortion/'+save_subdir):
-                    os.makedirs(self.save_dir+'/local_high_low_distortion/'+save_subdir)
-                plt.savefig(self.save_dir+'/local_high_low_distortion/'+save_subdir+'/thresh='+str(thresh)+'.png') 
+                if not os.path.isdir(self.save_dir+'/local_high_low_distortion/'):
+                    os.makedirs(self.save_dir+'/local_high_low_distortion/')
+                plt.savefig(self.save_dir+'/local_high_low_distortion/thresh='+str(thresh)+'.png') 
             
         
     def compare_intermediate_high_low_distortion(self, X, Atilde, Psitilde_gamma, 
-                                                 Psitilde_i, zetatilde, c, figsize=None, s=20):
+                                                 Psitilde_i, zetatilde, c,  save_subdir='', figsize=None, s=20):
         assert X.shape[1] <= 3, 'X.shape[1] must be either 2 or 3.'
         is_3d_data = X.shape[1] == 3
 
@@ -959,8 +1051,9 @@ class Visualize:
 
         fig = plt.figure(1, figsize=figsize)
         fig.canvas.mpl_connect('close_event', on_close)
-        figManager = plt.get_current_fig_manager()
-        figManager.window.showMaximized()
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
 
         ax = []
         if is_3d_data:
@@ -971,7 +1064,7 @@ class Visualize:
                 ax.append(fig.add_subplot(321+i))
                 
             p = ax[0].scatter(X[:,0], X[:,1], X[:,2], s=s, c=zeta, cmap='jet')
-            ax[0].autoscale()
+            set_axes_equal(ax[0])
         else:
             for i in range(6):
                 ax.append(fig.add_subplot(321+i))
@@ -1020,7 +1113,7 @@ class Visualize:
             if is_3d_data:
                 ax[2].scatter(X[low_dist_mask,0], X[low_dist_mask,1], X[low_dist_mask,2], s=s, c='b')
                 ax[2].scatter(X[high_dist_mask,0], X[high_dist_mask,1], X[high_dist_mask,2], s=s, c='r')
-                ax[2].autoscale()
+                set_axes_equal(ax[2])
             else:
                 ax[2].scatter(X[low_dist_mask,0], X[low_dist_mask,1], s=s, c='b')
                 ax[2].scatter(X[high_dist_mask,0], X[high_dist_mask,1], s=s, c='r')
@@ -1052,7 +1145,7 @@ class Visualize:
                     os.makedirs(self.save_dir+'/intermediate_high_low_distortion')
                 plt.savefig(self.save_dir+'/intermediate_high_low_distortion/thresh='+str(thresh)+'.png') 
     
-    def seq_of_intermediate_views(self, X, c, seq, rho, Utilde, figsize=None, s=20):
+    def seq_of_intermediate_views(self, X, c, seq, rho, Utilde, figsize=None, s=20, cmap='jet'):
         seq = np.copy(seq)
         M = seq.shape[0]
         mu = np.zeros((M,X.shape[1]))
@@ -1069,18 +1162,27 @@ class Visualize:
         seq = seq[c]
         assert X.shape[1] <= 3, 'X.shape[1] must be either 2 or 3.'
         fig = plt.figure(figsize=figsize)
-        figManager = plt.get_current_fig_manager()
-        figManager.window.showMaximized()
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
         if X.shape[1] == 2:
-            plt.scatter(X[:,0], X[:,1], s=s, c=seq, cmap='jet')
+            if cmap == 'colorcube':
+                c_ = colorcube(M)[seq,:]
+                plt.scatter(X[:,0], X[:,1], s=s, c=c_)
+            else:
+                plt.scatter(X[:,0], X[:,1], s=s, c=seq, cmap=cmap)
             plt.axis('image')
             plt.colorbar()
             plt.quiver(source[:,0], source[:,1], comp[:,0], comp[:,1], np.arange(M-1),
                        cmap='gray', angles='xy', scale_units='xy', scale=1)
         elif X.shape[1] == 3:
             ax = fig.add_subplot(projection='3d')
-            ax.autoscale()
-            p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=seq, cmap='jet')
+            if cmap == 'colorcube':
+                c_ = colorcube(M)[seq,:]
+                p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=c_)
+            else:
+                p = ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=seq, cmap=cmap)
+            set_axes_equal(ax)
             fig.colorbar(p)
         plt.title('Views colored in the sequence they are visited')
         if self.save_dir:
@@ -1096,24 +1198,49 @@ class Visualize:
             return
         
         fig = plt.figure(figsize=figsize)
-        figManager = plt.get_current_fig_manager()
-        figManager.window.showMaximized()
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
         
         if d == 2:
             ax = fig.add_subplot()
             ax.scatter(y[:,0], y[:,1], s=s, c=labels, cmap=cmap0)
             ax.axis('image')
-        elif d ==3:
+        elif d == 3:
             ax = fig.add_subplot(projection='3d')
             ax.scatter(y[:,0], y[:,1], y[:,2], s=s, c=labels, cmap=cmap0)
+            set_axes_equal(ax)
         
-        if color_of_pts_on_tear is not None:
-            if d == 2:
-                ax.scatter(y[:,0], y[:,1],
-                           s=s, c=color_of_pts_on_tear, cmap=cmap1)
-            elif d==3:
-                ax.scatter(y[:,0], y[:,1], y[:,2],
-                           s=s, c=color_of_pts_on_tear, cmap=cmap1)
+        if (color_of_pts_on_tear is not None) and (np.sum(np.isnan(color_of_pts_on_tear)) < y.shape[0]):
+            if cmap1 == 'colorcube':
+                uniq_vals = np.sort(np.unique(color_of_pts_on_tear[~np.isnan(color_of_pts_on_tear)]))
+                mymap = {}
+                ctr = 0
+                for i in range(uniq_vals.shape[0]):
+                    mymap[uniq_vals[i]] = i
+
+                cc_map = colorcube(uniq_vals.shape[0])
+                n_ = color_of_pts_on_tear.shape[0]
+                c_ = np.ones((n_,4))
+                for i in range(n_):
+                    if ~np.isnan(color_of_pts_on_tear[i]):
+                        c_[i,:3] = cc_map[mymap[color_of_pts_on_tear[i]],:]
+                    else:
+                        c_[i,3] = 0
+
+                if d == 2:
+                    ax.scatter(y[:,0], y[:,1], s=s, c=c_)
+                elif d==3:
+                    ax.scatter(y[:,0], y[:,1], y[:,2], s=s, c=c_)
+                    set_axes_equal(ax)
+            else:
+                if d == 2:
+                    ax.scatter(y[:,0], y[:,1],
+                               s=s, c=color_of_pts_on_tear, cmap=cmap1)
+                elif d==3:
+                    ax.scatter(y[:,0], y[:,1], y[:,2],
+                               s=s, c=color_of_pts_on_tear, cmap=cmap1)
+                    set_axes_equal(ax)
         ax.axis('off')
         if title is not None:
             ax.set_title(title)
@@ -1130,8 +1257,9 @@ class Visualize:
             return
         
         fig = plt.figure(figsize=figsize)
-        figManager = plt.get_current_fig_manager()
-        figManager.window.showMaximized()
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
         
         ax = fig.add_subplot()
         ax.scatter(y[:,0], y[:,1], s=s, c=labels, cmap=cmap0)

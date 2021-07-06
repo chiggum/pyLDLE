@@ -105,7 +105,8 @@ def graph_laplacian(d_e, k_nn, k_tune, gl_type,
             "gl_type should be one of {'normed','unnorm'}"
     
     n = d_e.shape[0]
-    # Find k_nn nearest neighbors excluding self
+    # Find k_nn nearest neighbors
+    # If n_neighbors==1 then it nearest neighbor = self
     neigh = NearestNeighbors(n_neighbors=k_nn,
                              metric='precomputed',
                              algorithm='brute')
@@ -122,27 +123,30 @@ def graph_laplacian(d_e, k_nn, k_tune, gl_type,
     K = np.exp(-neigh_dist**2/(autotune+eps))
     
     # Convert to sparse matrices
-    neigh_ind = neigh_ind.flatten()
     source_ind = np.repeat(np.arange(n),k_nn)
-    K = coo_matrix((K.flatten(),(source_ind,neigh_ind)),shape=(n,n))
+    K = coo_matrix((K.flatten(),(source_ind, neigh_ind.flatten())),shape=(n,n))
 
     # Compute and return graph Laplacian based on gl_type
     if gl_type == 'normed':
-        return laplacian(K, normed=True,
+        return neigh_dist, neigh_ind,\
+               laplacian(K, normed=True,
                          return_diag=return_diag,
                          use_out_degree=use_out_degree)
     elif gl_type == 'unnorm':
-        return laplacian(K, normed=False,
+        return neigh_dist, neigh_ind,\
+               laplacian(K, normed=False,
                          return_diag=return_diag,
                          use_out_degree=use_out_degree)
     
 
-def local_views_in_ambient_space(d_e, k):
-    neigh = NearestNeighbors(n_neighbors=k,
-                             metric='precomputed',
-                             algorithm='brute')
-    neigh.fit(d_e)
-    neigh_dist, neigh_ind = neigh.kneighbors()
+def local_views_in_ambient_space(d_e, k, neigh_dist=None):
+    if neigh_dist is None:
+        neigh = NearestNeighbors(n_neighbors=k,
+                                 metric='precomputed',
+                                 algorithm='brute')
+        neigh.fit(d_e)
+        neigh_dist, _ = neigh.kneighbors()
+    
     epsilon = neigh_dist[:,[k-1]]
     U = d_e < (epsilon + 1e-12)
     return U, epsilon
@@ -351,10 +355,10 @@ class LDLE:
                  lmbda = None,
                  phi = None,
                  k_nn = 48,
-                 k_tune = 6,
+                 k_tune = 6, # updated from 6
                  gl_type = 'unnorm',
                  N = 100,
-                 k = 24,
+                 k = 24, # updated from 24
                  no_gamma = False,
                  Atilde_method = 'LDLE_1',
                  p = 0.99,
@@ -375,17 +379,18 @@ class LDLE:
                  local_algo = 'LDLE',
                  global_algo = 'LDLE',
                  ddX = None,
-                 exit_at_step1 = False):
+                 exit_at_step1 = False,
+                 log_time = False):
         assert X is not None or d_e is not None, "Either X or d_e should be provided."
         self.X = X
         self.d_e = d_e
         self.lmbda = lmbda
         self.phi = phi
-        self.k_nn = k_nn
         self.k_tune = k_tune
         self.gl_type = gl_type
         self.N = N
         self.k = k
+        self.k_nn = max(k_nn,k)
         self.Atilde_method = Atilde_method
         self.no_gamma = no_gamma
         self.p = p
@@ -406,6 +411,7 @@ class LDLE:
         self.ddX = ddX
         self.vis = vis
         self.exit_at_step1 = exit_at_step1
+        self.log_time = log_time
         if vis is not None:
             default_vis_y_options = {'cmap0': 'summer',
                                      'cmap1': 'jet',
@@ -415,6 +421,10 @@ class LDLE:
                 default_vis_y_options[k] = vis_y_options[k]
         
             self.vis_y_options = default_vis_y_options
+    
+    def print_time_log(self,s):
+        if self.log_time:
+            print(s)
         
     def fit(self):
         old_time0 = time.time()
@@ -427,28 +437,29 @@ class LDLE:
                 self.d_e = double_manifold(self.X, self.ddX)
                 print('Doubled manifold')
         
-        print('###############')
-        print('Took %0.1f seconds to build distance matrix.' % (time.time()-old_time))
-        print('###############')
+        self.print_time_log('###############')
+        self.print_time_log('Took %0.1f seconds to build distance matrix.' % (time.time()-old_time))
+        self.print_time_log('###############')
         old_time = time.time()
         
         if self.local_algo == 'LDLE':
             if self.lmbda is None or self.phi is None:
                 # Obtain eigenvalues and eigenvectors of graph Laplacian
-                self.lmbda, self.phi = self.eig_graph_laplacian()
+                self.lmbda, self.phi = self.eig_graph_laplacian() # also sets self.neigh_ind, self.neigh_dist
 
-            print('###############')
-            print('Took %0.1f seconds to build graph Laplacian and compute its eigendecompositon.' % (time.time()-old_time))
-            print('###############')
+            self.print_time_log('###############')
+            self.print_time_log('Took %0.1f seconds to build graph Laplacian and\
+                                 compute its eigendecompositon.' % (time.time()-old_time))
+            self.print_time_log('###############')
             old_time = time.time()
                 
             # Construct local views in the ambient space
             # and obtain radius of each view
-            self.U, epsilon = local_views_in_ambient_space(self.d_e, self.k)
+            self.U, epsilon = local_views_in_ambient_space(self.d_e, self.k, self.neigh_dist)
             
-            print('###############')
-            print('Took %0.1f seconds to construct local views in ambient space.' % (time.time()-old_time))
-            print('###############')
+            self.print_time_log('###############')
+            self.print_time_log('Took %0.1f seconds to construct local views in ambient space.' % (time.time()-old_time))
+            self.print_time_log('###############')
             old_time = time.time()
 
             # Compute Atilde
@@ -465,9 +476,9 @@ class LDLE:
             else:
                 self.gamma = np.sqrt(1/(np.dot(self.U,self.phi**2)/np.sum(self.U,1)[:,np.newaxis]))
                 
-            print('###############')
-            print('Took %0.1f seconds to compute Atilde and gamma.' % (time.time()-old_time))
-            print('###############')
+            self.print_time_log('###############')
+            self.print_time_log('Took %0.1f seconds to compute Atilde and gamma.' % (time.time()-old_time))
+            self.print_time_log('###############')
             old_time = time.time()
 
             print('\nConstructing low distortion local views using LDLE...')
@@ -522,9 +533,9 @@ class LDLE:
             else:
                 self.local_param = self.local_param0
         
-        print('###############')
-        print('Took %0.1f seconds to compute local views in embedding space.' % (time.time()-old_time))
-        print('###############')
+        self.print_time_log('###############')
+        self.print_time_log('Took %0.1f seconds to compute local views in embedding space.' % (time.time()-old_time))
+        self.print_time_log('###############')
         old_time = time.time()
         
         print('Max local distortion =', np.max(self.local_param.zeta))
@@ -559,9 +570,9 @@ class LDLE:
             self.n_Utilde_Utilde = np.dot(self.Utilde, self.Utilde.T)
             np.fill_diagonal(self.n_Utilde_Utilde, 0)
             
-            print('###############')
-            print('Took %0.1f seconds to compute |Utilde_i intersect Utilde_j|.' % (time.time()-old_time))
-            print('###############')
+            self.print_time_log('###############')
+            self.print_time_log('Took %0.1f seconds to compute |Utilde_i intersect Utilde_j|.' % (time.time()-old_time))
+            self.print_time_log('###############')
             old_time = time.time()
             
             print('\nInitializing parameters and computing initial global embedding...')
@@ -661,13 +672,14 @@ class LDLE:
         v0 = np.random.uniform(0,1,self.d_e.shape[0])
         if self.gl_type != 'random_walk':
             # Construct graph Laplacian
-            L = graph_laplacian(self.d_e, self.k_nn,
-                                 self.k_tune, self.gl_type)
+            self.neigh_dist, self.neigh_ind, L = graph_laplacian(self.d_e, self.k_nn,
+                                                                 self.k_tune, self.gl_type)
             lmbda, phi = eigsh(L, k=self.N+1, v0=v0, which='SM')
         else:
             # Construct graph Laplacian
-            L, D = graph_laplacian(self.d_e, self.k_nn,
-                                     self.k_tune, 'normed', return_diag = True)
+            self.neigh_dist, self.neigh_ind, L, D = graph_laplacian(self.d_e, self.k_nn,
+                                                                    self.k_tune, 'normed',
+                                                                    return_diag = True)
             lmbda, phi = eigsh(L, k=self.N+1, v0=v0, which='SM')
             phi = phi/D[:,np.newaxis]
         
@@ -897,7 +909,7 @@ class LDLE:
                 k = np.argmin(cost)
                 cost_star = cost[k]
             print('Remaining #nodes in views with sz < %d = %d' % (eta, np.sum(n_C[c]<eta)))
-            print('eta = %d, time passed = %0.1f' % (eta, (time.time()-old_time)))
+            self.print_time_log('eta = %d, time passed = %0.1f' % (eta, (time.time()-old_time)))
         
         # Prune empty clusters
         non_empty_C = n_C > 0
@@ -999,17 +1011,17 @@ class LDLE:
         M,n = self.Utilde.shape
         old_time = time.time()
         d_e_ = squareform(pdist(y)) # O(n^2 d)
-        print('pdist(y) done. Time taken = %0.1f seconds.' % (time.time()-old_time))
+        self.print_time_log('pdist(y) done. Time taken = %0.1f seconds.' % (time.time()-old_time))
         old_time = time.time()
         Ug, _ = local_views_in_ambient_space(d_e_, np.min([self.k * self.nu, d_e_.shape[0]-1])) # O(n(n+k log(n)))
-        print('Ug computed. Time taken = %0.1f seconds.' % (time.time()-old_time))
+        self.print_time_log('Ug computed. Time taken = %0.1f seconds.' % (time.time()-old_time))
         old_time = time.time()
         Utildeg = np.zeros((M,n),dtype=bool)
         # O(n^2)
         for m in range(M):
             Utildeg[m,:] = np.any(Ug[self.C[m,:],:], 0)
         
-        print('Utildeg computed. Time taken = %0.1f seconds.' % (time.time()-old_time))
+        self.print_time_log('Utildeg computed. Time taken = %0.1f seconds.' % (time.time()-old_time))
         old_time = time.time()
             
         # |Utildeg_{mm'}|
@@ -1017,7 +1029,7 @@ class LDLE:
         n_Utildeg_Utildeg = np.dot(Utildeg, Utildeg.T) # O(M^2 n) = O(n^3/eta_min^2)
         np.fill_diagonal(n_Utildeg_Utildeg, 0)
         
-        print('n_Utildeg_Utildeg computed. Time taken = %0.1f seconds.' % (time.time()-old_time))
+        self.print_time_log('n_Utildeg_Utildeg computed. Time taken = %0.1f seconds.' % (time.time()-old_time))
             
         return Utildeg, n_Utildeg_Utildeg
        
@@ -1105,7 +1117,7 @@ class LDLE:
         C_s_0 = self.C[seq[0],:]
         y[C_s_0,:] = self.intermed_param.eval_(seq[0], C_s_0)
         
-        print('Naive initialization done. Time passed = %0.1f seconds.' % (time.time()-old_time))
+        self.print_time_log('Naive initialization done. Time passed = %0.1f seconds.' % (time.time()-old_time))
 
         # Traverse views from 2nd view
         for m in range(1,M):
@@ -1177,23 +1189,24 @@ class LDLE:
 
         print('error:', np.mean(err))
         
-        print('Better initialization done. Time passed = %0.1f seconds.' % (time.time()-old_time))
+        self.print_time_log('Better initialization done. Time passed = %0.1f seconds.' % (time.time()-old_time))
         
         if self.to_tear:
             color_of_pts_on_tear = self.compute_color_of_pts_on_tear(y)
         else:
             color_of_pts_on_tear = None
             
-        print('Tear computation done. Time passed = %0.1f seconds.' % (time.time()-old_time))
+        self.print_time_log('Tear computation done. Time passed = %0.1f seconds.' % (time.time()-old_time))
         
         if self.vis is not None:
             v_opts = self.vis_y_options
             self.vis.global_embedding(y, v_opts['labels'], v_opts['cmap0'],
                                       color_of_pts_on_tear, v_opts['cmap1'],
                                       'Initial')
-            plt.waitforbuttonpress(1)
+            plt.show()
+            #plt.waitforbuttonpress(1)
         
-        print('Plot done. Time passed = %0.1f seconds.' % (time.time()-old_time))
+        self.print_time_log('Plot done. Time passed = %0.1f seconds.' % (time.time()-old_time))
         
         return y, seq[0], color_of_pts_on_tear
     
@@ -1212,7 +1225,7 @@ class LDLE:
             # Compute |Utildeg_{mm'}|
             _, n_Utildeg_Utildeg = self.compute_Utildeg(y)
             
-        print('n_Utildeg_Utildeg computed. Time passed = %0.1f seconds.' % (time.time()-old_time))
+        self.print_time_log('n_Utildeg_Utildeg computed. Time passed = %0.1f seconds.' % (time.time()-old_time))
 
         # Refine global embedding y
         for it0 in range(max_iter0):
@@ -1277,28 +1290,29 @@ class LDLE:
                     C_s = self.C[s,:]
                     y[C_s,:] = self.intermed_param.eval_(s, C_s)
                     
-                print('it0=%d it1=%d completed. Time passed = %0.1f seconds.' % (it0, it1, (time.time()-old_time)))
+                self.print_time_log('it0=%d it1=%d completed. Time passed = %0.1f seconds.' % (it0, it1, (time.time()-old_time)))
 
             # If to tear the closed manifolds
             if self.to_tear:
                 # Compute |Utildeg_{mm'}|
                 _, n_Utildeg_Utildeg = self.compute_Utildeg(y)
-                print('it0=%d, n_Utildeg_Utildeg computed. Time passed = %0.1f seconds.' % (it0, time.time()-old_time))
+                self.print_time_log('it0=%d, n_Utildeg_Utildeg computed. Time passed = %0.1f seconds.' % (it0, time.time()-old_time))
                 color_of_pts_on_tear = self.compute_color_of_pts_on_tear(y, n_Utildeg_Utildeg)
-                print('it0=%d, color_of_pts_on_tear computed. Time passed = %0.1f seconds.' % (it0, time.time()-old_time))
+                self.print_time_log('it0=%d, color_of_pts_on_tear computed. Time passed = %0.1f seconds.' % (it0, time.time()-old_time))
             else:
                 color_of_pts_on_tear = None
             
             print('error:', np.mean(err))
             # Visualize current embedding
-            if self.vis is not None and np.mod(it0,5)==0:
+            if self.vis is not None and ((np.mod(it0,5)==0) or (it0==(max_iter0-1))):
                 v_opts = self.vis_y_options
                 self.vis.global_embedding(y, v_opts['labels'], v_opts['cmap0'],
                                           color_of_pts_on_tear, v_opts['cmap1'],
                                           ('Iter_%d' % it0))
-                plt.waitforbuttonpress(1)
+                plt.show()
+                #plt.waitforbuttonpress(1)
             
-                print('it0=%d, plot done. Time passed = %0.1f seconds.' % (it0, time.time()-old_time))
+                self.print_time_log('it0=%d, plot done. Time passed = %0.1f seconds.' % (it0, time.time()-old_time))
 
         return y, color_of_pts_on_tear
     
