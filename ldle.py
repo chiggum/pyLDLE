@@ -20,9 +20,13 @@ from matplotlib import pyplot as plt
 
 import time
 
+DEBUG = False
+
 # Solves for T, v s.t. T, v = argmin_{R,w)||AR + w - B||_F^2
 # Here A and B have same shape n x d, T is d x d and v is 1 x d
 def procrustes(A,B,scaling=False):
+#     # Use the below snippet of procrustes from custom_procrustes 
+#     # which imitates matlab procrustes method
 #     d = A.shape[1]
 #     a = np.mean(A,0)
 #     b = np.mean(B,0)
@@ -99,12 +103,15 @@ def cost_of_moving(k, d_e, U, local_param, c, n_C,
     return cost_k, dest_k
         
 def graph_laplacian(d_e, k_nn, k_tune, gl_type,
-                    return_diag=False, use_out_degree=False):
-    assert k_nn > k_tune, "k_nn must be greater than k_tune."
-    assert gl_type in ['normed','unnorm'],\
-            "gl_type should be one of {'normed','unnorm'}"
+                    return_diag=False, use_out_degree=True,
+                    tune_type=0):
+    if type(k_tune) != list:
+        assert k_nn > k_tune, "k_nn must be greater than k_tune."
+    assert gl_type in ['normed','unnorm', 'diffusion'],\
+            "gl_type should be one of {'normed','unnorm','diffusion'}"
     
     n = d_e.shape[0]
+    
     # Find k_nn nearest neighbors
     # If n_neighbors==1 then it nearest neighbor = self
     neigh = NearestNeighbors(n_neighbors=k_nn,
@@ -112,28 +119,57 @@ def graph_laplacian(d_e, k_nn, k_tune, gl_type,
                              algorithm='brute')
     neigh.fit(d_e)
     neigh_dist, neigh_ind = neigh.kneighbors()
-    #pdb.set_trace()
     
-    # Compute tuning values for each pair of neighbors
-    sigma = neigh_dist[:,k_tune-1].flatten()
-    autotune = sigma[neigh_ind]*sigma[:,np.newaxis]
+    if type(k_tune) == list:
+        epsilon = neigh_dist[:,k_nn-1]
+        p, d = k_tune
+        autotune = 4*0.5*((epsilon**2)/chi2.ppf(p, df=d))
+        autotune = autotune[:,np.newaxis]
+    else:
+        # Compute tuning values for each pair of neighbors
+        sigma = neigh_dist[:,k_tune-1].flatten()
+        if tune_type == 0:
+            autotune = sigma[neigh_ind]*sigma[:,np.newaxis]
+        elif tune_type == 1:
+            autotune = sigma[:,np.newaxis]**2
+        elif tune_type == 2:
+            autotune = np.median(sigma)**2
     
-    # Compute kernel matrix
-    eps = np.finfo(np.float64).eps
-    K = np.exp(-neigh_dist**2/(autotune+eps))
+    if tune_type != 3:
+        # Compute kernel matrix
+        eps = np.finfo(np.float64).eps
+        K = np.exp(-neigh_dist**2/(autotune+eps))
+    else:
+        K = np.ones(neigh_dist.shape)
     
     # Convert to sparse matrices
     source_ind = np.repeat(np.arange(n),k_nn)
     K = coo_matrix((K.flatten(),(source_ind, neigh_ind.flatten())),shape=(n,n))
+    autotune = coo_matrix((autotune.flatten(),(source_ind, neigh_ind.flatten())),shape=(n,n))
+    K0 = coo_matrix((np.ones(neigh_dist.shape).flatten(),(source_ind, neigh_ind.flatten())),shape=(n,n))
+    
+    
+    K = K + K.T
+    K0 = K0 + K0.T
+    autotune = autotune + autotune.T
+    
+    K.data /= K0.data
+    autotune.data /= K0.data
+    
+    #pdb.set_trace()
+    if gl_type == 'diffusion':
+        D = 1/(K.sum(axis=1).reshape((n,1)))
+        K = K.multiply(D).multiply(D.transpose())
+        gl_type = 'normed'
 
     # Compute and return graph Laplacian based on gl_type
     if gl_type == 'normed':
-        return neigh_dist, neigh_ind,\
+        return autotune, neigh_dist, neigh_ind,\
                laplacian(K, normed=True,
                          return_diag=return_diag,
                          use_out_degree=use_out_degree)
     elif gl_type == 'unnorm':
-        return neigh_dist, neigh_ind,\
+        return autotune, neigh_dist, neigh_ind,\
                laplacian(K, normed=False,
                          return_diag=return_diag,
                          use_out_degree=use_out_degree)
@@ -157,6 +193,7 @@ def compute_gradient_using_LLR(X, phi, d_e, U, t, d, print_prop = 0.25):
     N = phi.shape[1]
     grad_phi = np.zeros((n,N,p))
     
+    #Uh = d_e < np.sqrt(4*t)
     Uh = d_e < 4*t
     G = np.power(4*t,-d/2)*np.exp(-d_e**2/(4*t))*Uh
     
@@ -185,30 +222,14 @@ def compute_gradient_using_LLR(X, phi, d_e, U, t, d, print_prop = 0.25):
         WW_k = G[k,Uh_k][np.newaxis,:].T
         
         Y = phi[Uh_k,:]
-        bhat_k = np.dot(np.linalg.inv(np.dot(XX_k.T,WW_k*XX_k)),np.dot(XX_k.T, WW_k*Y))
+        temp = np.dot(XX_k.T,WW_k*XX_k)
+        #print(k)
+        #print(XX_k)
+        #print(WW_k)
+        #print(temp)
+        bhat_k = np.dot(np.linalg.inv(temp),np.dot(XX_k.T, WW_k*Y))
         
         grad_phi[k,:,:] = np.dot(B_k,bhat_k[1:,:]).T
-    
-    return grad_phi
-
-def compute_gradient_using_formula(X, phi, lmbda, d_e, U, t, d, print_prop = 0.25):
-    n,p = X.shape
-    print_freq = np.int(n*print_prop)
-    N = phi.shape[1]
-    grad_phi = np.zeros((n,N,p))
-    
-    #G = np.power(2*np.pi,-d/2)*np.power(2*t,-1/2)*np.exp(-d_e**2/(4*t))*U
-    G = np.exp(-d_e**2/(4*t))*U
-    G = G/(np.sum(G,axis=1)[:,np.newaxis])
-    
-    for k in range(n):
-        if print_freq and np.mod(k,print_freq)==0:
-            print('Gradient computation done for %d points...' % k)
-            
-        U_k = U[k,:]
-        X_k = X[U_k,:] - X[k,:]
-        C = (np.exp(lmbda[:,np.newaxis]*t[k])/(2*t[k]))
-        grad_phi[k,:,:] = C*np.dot(phi[U_k,:].T, X_k*(G[k,U_k][:,np.newaxis]))
     
     return grad_phi
 
@@ -216,13 +237,18 @@ def compute_Atilde(phi, d_e, U, epsilon, p, d, print_prop = 0.25):
     n, N = phi.shape
     print_freq = np.int(n*print_prop)
     
+    U = U.copy()
+    np.fill_diagonal(U, 0)
+    
     # Compute G
     t = 0.5*((epsilon**2)/chi2.ppf(p, df=d))
+    #t = 0.5*(np.dot(epsilon.T,epsilon))/chi2.ppf(p, df=d)
     G = np.exp(-d_e**2/(4*t))*U
     G = G/(np.sum(G,1)[:,np.newaxis])
 
     # Compute Gtilde (Gtilde_k = (1/t_k)[G_{k1},...,G_{kn}])
-    Gtilde = G/(2*t)
+    Gtilde = G/(2*t) # Helps in correcting issues at the boundary (see page 5  of http://math.gmu.edu/~berry/Publications/VaughnBerryAntil.pdf)
+    # Gtilde = G
     
     Atilde=np.zeros((n,N,N))
     
@@ -234,7 +260,27 @@ def compute_Atilde(phi, d_e, U, epsilon, p, d, print_prop = 0.25):
         Atilde[k,:,:] = np.dot(dphi_k.T, dphi_k*(Gtilde[k,U_k][:,np.newaxis]))
     
     print('Atilde_k, Atilde_k: all points processed...')
-    return Atilde
+    return Gtilde, Atilde
+
+def compute_Atilde_LDLE_2(X, L, phi0, phi, lmbda0, lmbda, d_e, U, epsilon, p, d, autotune, print_prop = 0.25):
+    n, N = phi.shape
+    print_freq = np.int(n*print_prop)
+    
+    L = L.copy()
+    L = L/(autotune.toarray()+1e-12)
+    
+    lmbda = lmbda.copy()
+    lmbda = lmbda.reshape(1,N)
+    Atilde=np.zeros((n,N,N))
+    
+    # For computing derivative at t=0
+    for k in range(n):
+        if print_freq and np.mod(k,print_freq)==0:
+            print('Atilde: : %d points processed...' % k)
+        dphi_k = phi-phi[k,:]
+        Atilde[k,:,:] = -0.5*np.dot(dphi_k.T, dphi_k*(L[k,:][:,np.newaxis]))
+    print('Atilde_k, Atilde_k: all points processed...')
+    return None, Atilde
 
 def compute_Atilde_LLR(X, phi, d_e, U, epsilon, p, d, print_prop = 0.25):
     n, N = phi.shape
@@ -255,23 +301,25 @@ def compute_Atilde_LLR(X, phi, d_e, U, epsilon, p, d, print_prop = 0.25):
     print('Atilde_k, Atilde_k: all points processed...')
     return grad_phi, Atilde
 
-def compute_Atilde_formula(X, phi, lmbda, d_e, U, epsilon, p, d, print_prop = 0.25):
+def compute_Atilde_LDLE_3(X, L, phi0, phi, lmbda0, lmbda, d_e, U, epsilon, p, d, autotune, print_prop = 0.25):
     n, N = phi.shape
     print_freq = np.int(n*print_prop)
-    
-    t = 0.5*((epsilon**2)/chi2.ppf(p, df=d))
-    grad_phi = compute_gradient_using_formula(X, phi, lmbda, d_e, U, t, d, print_prop = print_prop)
     Atilde=np.zeros((n,N,N))
+    
+    temp1 = np.dot(lmbda*phi, phi.T)
+    temp1 = temp1 + np.dot(lmbda0*phi0, phi0.T)
+    temp1 = temp1/(autotune.toarray()+1e-12)
     
     for k in range(n):
         if print_freq and np.mod(k,print_freq)==0:
-            print('A_k, Atilde_k: %d points processed...' % k)
+            print('Atilde: : %d eigenvectors processed...' % k)
         
-        grad_phi_k = grad_phi[k,:,:]
-        Atilde[k,:,:] = np.dot(grad_phi_k, grad_phi_k.T)
+        dphi_k = phi-phi[k,:]
+        Atilde[k,:,:] = -0.5*np.dot(dphi_k.T, dphi_k*(temp1[k,:][:,np.newaxis]))
     
     print('Atilde_k, Atilde_k: all points processed...')
-    return grad_phi, Atilde
+    return None, Atilde
+
 
 def double_manifold(X, ddX):
     d_e = squareform(pdist(X))
@@ -311,7 +359,7 @@ class Param:
     def eval_(self, k, mask):
         if self.algo == 'LDLE':
             temp = self.Psi_gamma[k,:][np.newaxis,:]*self.phi[np.ix_(mask,self.Psi_i[k,:])]
-        elif self.algo == 'LTSAP':
+        elif self.algo == 'LTSA':
 #             X_ = self.X[mask,:]
 #             temp = np.dot(X_ - np.mean(X_,axis=0)[np.newaxis,:],self.Psi[k,:,:])
             temp = np.dot(self.X[mask,:]-self.mu[k,:][np.newaxis,:],self.Psi[k,:,:])
@@ -355,12 +403,12 @@ class LDLE:
                  lmbda = None,
                  phi = None,
                  k_nn = 48,
-                 k_tune = 6, # updated from 6
+                 k_tune = 6,
                  gl_type = 'unnorm',
                  N = 100,
-                 k = 24, # updated from 24
+                 k = 24,
                  no_gamma = False,
-                 Atilde_method = 'LDLE_1',
+                 Atilde_method = 'LDLE_1', 
                  p = 0.99,
                  d = 2,
                  tau = 50,
@@ -380,7 +428,9 @@ class LDLE:
                  global_algo = 'LDLE',
                  ddX = None,
                  exit_at_step1 = False,
-                 log_time = False):
+                 log_time = False,
+                 recompute_d_e = 0,
+                 recompute_d_e_t = 1):
         assert X is not None or d_e is not None, "Either X or d_e should be provided."
         self.X = X
         self.d_e = d_e
@@ -412,6 +462,8 @@ class LDLE:
         self.vis = vis
         self.exit_at_step1 = exit_at_step1
         self.log_time = log_time
+        self.recompute_d_e = recompute_d_e
+        self.recompute_d_e_t = recompute_d_e_t
         if vis is not None:
             default_vis_y_options = {'cmap0': 'summer',
                                      'cmap1': 'jet',
@@ -430,7 +482,7 @@ class LDLE:
         old_time0 = time.time()
         old_time = time.time()
         if self.d_e is None:
-            if self.ddX is None or self.local_algo == 'LTSAP':
+            if self.ddX is None or self.local_algo == 'LTSA':
                 self.d_e = squareform(pdist(self.X))
             else:
                 print('Doubling manifold')
@@ -443,9 +495,13 @@ class LDLE:
         old_time = time.time()
         
         if self.local_algo == 'LDLE':
-            if self.lmbda is None or self.phi is None:
+            if self.phi is None:
                 # Obtain eigenvalues and eigenvectors of graph Laplacian
                 self.lmbda, self.phi = self.eig_graph_laplacian() # also sets self.neigh_ind, self.neigh_dist
+            else:
+                self.eig_graph_laplacian()
+                self.lmbda = np.diagonal(np.dot(self.phi.T, np.dot(self.L,self.phi)))
+                print('lmbda:',self.lmbda)
 
             self.print_time_log('###############')
             self.print_time_log('Took %0.1f seconds to build graph Laplacian and\
@@ -455,6 +511,12 @@ class LDLE:
                 
             # Construct local views in the ambient space
             # and obtain radius of each view
+            if self.recompute_d_e:
+                print('Recomputing d_e using diffusion distance.')
+                temp = np.power(self.lmbda[:self.recompute_d_e][np.newaxis,:],self.recompute_d_e_t)
+                temp = temp*self.phi[:,:self.recompute_d_e]
+                self.d_e = squareform(pdist(temp))
+                self.neigh_dist = None
             self.U, epsilon = local_views_in_ambient_space(self.d_e, self.k, self.neigh_dist)
             
             self.print_time_log('###############')
@@ -464,12 +526,21 @@ class LDLE:
 
             # Compute Atilde
             if self.Atilde_method == 'LLR':
+                print('Using LLR')
                 self.grad_phi, self.Atilde = compute_Atilde_LLR(self.X, self.phi, self.d_e, self.U, epsilon, self.p, self.d)
             elif self.Atilde_method == 'LDLE_2':
-                self.grad_phi, self.Atilde = compute_Atilde_formula(self.X, self.phi, self.lmbda, self.d_e, self.U, epsilon, self.p, self.d)
+                print('Using LDLE_2')
+                self.grad_phi, self.Atilde = compute_Atilde_LDLE_2(self.X, self.L, self.phi0, self.phi, self.lmbda0, self.lmbda, self.d_e, self.U, epsilon, self.p, self.d, self.autotune)
+            elif self.Atilde_method == 'LDLE_3':
+                print('Using LDLE_3')
+                self.grad_phi, self.Atilde = compute_Atilde_LDLE_3(self.X, self.L, self.phi0, self.phi, self.lmbda0, self.lmbda, self.d_e, self.U, epsilon, self.p, self.d, self.autotune)
             else: #LDLE_1
-                self.Atilde = compute_Atilde(self.phi, self.d_e, self.U, epsilon, self.p, self.d)
-                
+                print('Using LDLE_1')
+                self.Gtilde, self.Atilde = compute_Atilde(self.phi, self.d_e, self.U, epsilon, self.p, self.d)
+            
+            if self.exit_at_step1:
+                return
+            
             # Compute gamma
             if self.no_gamma:
                 self.gamma = np.ones((self.d_e.shape[0], self.N))
@@ -546,8 +617,6 @@ class LDLE:
         old_time0 = time.time()
         old_time = time.time()
         
-        if self.exit_at_step1:
-            return
         
         # Compute b
         # self.local_param.b = self.compute_b()
@@ -594,7 +663,7 @@ class LDLE:
             print('Took %0.1f seconds to refine global embedding.' % (time.time()-old_time))
             print('###############')
             old_time = time.time()
-        elif self.global_algo == 'LTSAP':
+        elif self.global_algo == 'LTSA':
             print('Using LTSA Global Alignment...')
             self.y_final = self.compute_final_global_embedding_ltsap_based()
             self.color_of_pts_on_tear_final = None
@@ -605,6 +674,13 @@ class LDLE:
         old_time0 = time.time()
     
     def search_for_tau_and_delta(self, tau_lim=[10,90], ntau=5, delta_lim=[0.1,0.9], ndelta=5):
+        if self.d_e is None:
+            if self.ddX is None or self.local_algo == 'LTSA':
+                self.d_e = squareform(pdist(self.X))
+            else:
+                print('Doubling manifold')
+                self.d_e = double_manifold(self.X, self.ddX)
+                print('Doubled manifold')
         # Obtain eigenvalues and eigenvectors of graph Laplacian
         self.lmbda, self.phi = self.eig_graph_laplacian()
         
@@ -616,7 +692,7 @@ class LDLE:
         if self.Atilde_method == 'LLR':
             self.grad_phi, self.Atilde = compute_Atilde_LLR(self.X, self.phi, self.d_e, self.U, epsilon, self.p, self.d)
         elif self.Atilde_method == 'LDLE_2':
-            self.grad_phi, self.Atilde = compute_Atilde_formula(self.X, self.phi, self.lmbda, self.d_e, self.U, epsilon, self.p, self.d)
+            self.grad_phi, self.Atilde = compute_Atilde_formula(self.X, self.L, self.phi, self.lmbda, self.d_e, self.U, epsilon, self.p, self.d)
         else: #LDLE_1
             self.Atilde = compute_Atilde(self.phi, self.d_e, self.U, epsilon, self.p, self.d)
         
@@ -670,22 +746,35 @@ class LDLE:
         # Following is needed for reproducibility of lmbda and phi
         np.random.seed(42)
         v0 = np.random.uniform(0,1,self.d_e.shape[0])
-        if self.gl_type != 'random_walk':
+        if self.gl_type not in ['random_walk', 'diffusion']:
             # Construct graph Laplacian
-            self.neigh_dist, self.neigh_ind, L = graph_laplacian(self.d_e, self.k_nn,
+            self.autotune, self.neigh_dist, self.neigh_ind, L = graph_laplacian(self.d_e, self.k_nn,
                                                                  self.k_tune, self.gl_type)
             lmbda, phi = eigsh(L, k=self.N+1, v0=v0, which='SM')
+            L = L.toarray()
         else:
+            if self.gl_type == 'random_walk':
+                gl_type = 'normed'
+            else:
+                gl_type = self.gl_type
             # Construct graph Laplacian
-            self.neigh_dist, self.neigh_ind, L, D = graph_laplacian(self.d_e, self.k_nn,
-                                                                    self.k_tune, 'normed',
+            self.autotune, self.neigh_dist, self.neigh_ind, LD = graph_laplacian(self.d_e, self.k_nn,
+                                                                    self.k_tune, gl_type,
                                                                     return_diag = True)
+            L, D = LD
             lmbda, phi = eigsh(L, k=self.N+1, v0=v0, which='SM')
+            L = L.toarray()
+            L = (L/D[:,np.newaxis])*D[np.newaxis,:]
             phi = phi/D[:,np.newaxis]
+            phi = phi/(np.linalg.norm(phi,axis=0)[np.newaxis,:])
         
         # Ignore the trivial eigenvalue and eigenvector
+        self.lmbda0 = lmbda[0]
+        self.phi0 = phi[:,0][:,np.newaxis]
         lmbda = lmbda[1:]
         phi = phi[:,1:]
+        self.L = L
+        self.v0 = v0
         return lmbda, phi
     
     def compute_LDLE(self, print_prop = 0.25):
@@ -725,7 +814,7 @@ class LDLE:
             Stilde_k = Atikde_kii >= theta_1
             
             # Compute i_1
-            r_1 = np.argmax(Stilde_k)
+            r_1 = np.argmax(Stilde_k) # argmax finds first index with max value
             temp = gamma_k * np.abs(Atilde_k[:,r_1])
             alpha_1 = np.max(temp * Stilde_k)
             i[0] = np.argmax((temp >= delta*alpha_1) & (Stilde_k))
@@ -740,7 +829,7 @@ class LDLE:
                 temp_ = Hs_kii[Stilde_k]
                 theta_s = np.percentile(temp_, tau)
                 
-                theta_s=np.max([theta_s,np.min([np.max(temp_),1e-4])])
+                #theta_s=np.max([theta_s,np.min([np.max(temp_),1e-4])])
                 
                 # Compute i_s
                 r_s = np.argmax((Hs_kii>=theta_s) & Stilde_k)
@@ -789,7 +878,7 @@ class LDLE:
                         new_param_of[k] = kp
                         param_changed_new[k] = 1
             
-            if self.local_algo == 'LTSAP':
+            if self.local_algo == 'LTSA':
                 local_param.Psi = local_param.Psi[new_param_of,:,:]
                 local_param.mu = local_param.mu[new_param_of,:]
             else:# default to LDLE
@@ -809,7 +898,7 @@ class LDLE:
         p = self.X.shape[1]
         print_freq = int(print_prop * n)
         # initializations
-        local_param = Param('LTSAP')
+        local_param = Param('LTSA')
         local_param.X = self.X
         local_param.Psi = np.zeros((n,p,self.d))
         local_param.mu = np.zeros((n,p))
@@ -928,7 +1017,7 @@ class LDLE:
         if self.local_algo == 'LDLE':
             intermed_param.Psi_i = self.local_param.Psi_i[non_empty_C,:]
             intermed_param.Psi_gamma = self.local_param.Psi_gamma[non_empty_C,:]
-        elif self.local_algo == 'LTSAP':
+        elif self.local_algo == 'LTSA':
             intermed_param.Psi = self.local_param.Psi[non_empty_C,:]
             intermed_param.mu = self.local_param.mu[non_empty_C,:]
             
@@ -1073,9 +1162,12 @@ class LDLE:
 
         # track the next color to assign
         cur_color = 1
+        
+        seq, rho = breadth_first_order(self.n_Utilde_Utilde>0, 0, directed=False) #(ignores edge weights)
+        
 
         # Iterate over views
-        for m in range(M):
+        for m in seq:
             to_tear_mth_view_with = np.where(tear[m,:])[0].tolist()
             if len(to_tear_mth_view_with):
                 # Points in the overlap of mth view and the views
@@ -1086,8 +1178,8 @@ class LDLE:
                     # Compute points on the overlap of m and m'th view
                     # which are in mth cluster and in m'th cluster. If
                     # both sets are non-empty then assign them same color.
-                    temp_m = temp[i,:] & (self.C[m,:])
-                    temp_mp = temp[i,:] & (self.C[mp,:])
+                    temp_m = temp[i,:] & (self.C[m,:]) & np.isnan(color_of_pts_on_tear)
+                    temp_mp = temp[i,:] & (self.C[mp,:])  & np.isnan(color_of_pts_on_tear)
                     if np.any(temp_m) and np.any(temp_mp):
                         color_of_pts_on_tear[temp_m|temp_mp] = cur_color
                         cur_color += 1

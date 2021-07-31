@@ -12,6 +12,7 @@ from matplotlib.widgets import Slider
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 from matplotlib.cbook import get_sample_data
+from scipy.spatial.distance import pdist, squareform
 
 def eval_param(phi, Psi_gamma, Psi_i, k, mask, beta=None, T=None, v=None):
     if beta is None:
@@ -33,7 +34,6 @@ plt.rc('xtick', labelsize=SMALL_SIZE)    # fontsize of the tick labels
 plt.rc('ytick', labelsize=SMALL_SIZE)    # fontsize of the tick labels
 plt.rc('legend', fontsize=MEDIUM_SIZE)    # legend fontsize
 plt.rc('figure', titlesize=BIGGER_SIZE)  # fontsize of the figure title
-
 
 # colorcube colormap taken from matlab
 def colorcube(m):
@@ -106,6 +106,17 @@ def imscatter(x, y, image, ax=None, zoom=1):
     ax.autoscale()
     return artists
 
+def closest_pt(x_min, x_max, y_min, y_max, p):
+    i = np.argmin([p[0]-x_min,x_max-p[0], p[1]-y_min, y_max-p[1]])
+    if i == 0:
+        return [x_min,p[1]]
+    elif i==1:
+        return [x_max,p[1]]
+    elif i==2:
+        return [p[0],y_min]
+    elif i==3:
+        return [p[0],y_max]
+
 def set_axes_equal(ax):
     '''Make axes of 3D plot have equal scale so that spheres appear as spheres,
     cubes as cubes, etc..  This is one possible solution to Matplotlib's
@@ -142,20 +153,22 @@ class Visualize:
                 os.makedirs(self.save_dir)
         pass
     
-    def data(self, X, labels, title='Data', figsize=None, s=20):
+    def data(self, X, labels, title='Data', figsize=None, s=20, cmap='jet'):
         assert X.shape[1] <= 3, 'X.shape[1] must be either 2 or 3.'
         fig = plt.figure(figsize=figsize)
         if matplotlib.get_backend().startswith('Qt'):
             figManager = plt.get_current_fig_manager()
             figManager.window.showMaximized()
         if X.shape[1] == 2:
-            plt.scatter(X[:,0], X[:,1], s=s, c=labels, cmap='jet')
+            plt.scatter(X[:,0], X[:,1], s=s, c=labels, cmap=cmap)
             plt.axis('image')
         elif X.shape[1] == 3:
             ax = fig.add_subplot(projection='3d')
-            ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=labels, cmap='jet')
+            ax.scatter(X[:,0], X[:,1], X[:,2], s=s, c=labels, cmap=cmap)
             set_axes_equal(ax)
         plt.title(title)
+        plt.tight_layout()
+        plt.axis('off')
         if self.save_dir:
             plt.savefig(self.save_dir+'/' + title + '.png') 
         
@@ -1189,7 +1202,7 @@ class Visualize:
             plt.savefig(self.save_dir+'/seq_in_which_views_are_visited.png') 
     
     def global_embedding(self, y, labels, cmap0, color_of_pts_on_tear=None, cmap1=None,
-                         title=None, figsize=None, s=30):
+                         title=None, figsize=None, s=30, set_title=False):
         d = y.shape[1]
         if d == 1:
             y = np.concatenate([y,y],axis=1)
@@ -1242,16 +1255,23 @@ class Visualize:
                                s=s, c=color_of_pts_on_tear, cmap=cmap1)
                     set_axes_equal(ax)
         ax.axis('off')
-        if title is not None:
+        if set_title:
             ax.set_title(title)
-            
+        
+        plt.gca().set_axis_off()
+        plt.subplots_adjust(top = 1, bottom = 0, right = 1, left = 0, 
+                    hspace = 0, wspace = 0)
+        plt.margins(0,0)
+        plt.gca().xaxis.set_major_locator(plt.NullLocator())
+        plt.gca().yaxis.set_major_locator(plt.NullLocator())
+        
         if self.save_dir:
             if not os.path.isdir(self.save_dir+'/ge'):
                 os.makedirs(self.save_dir+'/ge')
-            plt.savefig(self.save_dir+'/ge/'+str(title)+'.png')
+            plt.savefig(self.save_dir+'/ge/'+str(title)+'.png', bbox_inches = 'tight',pad_inches = 0)
     
     def global_embedding_images(self, X, img_shape, y, labels, cmap0, color_of_pts_on_tear=None, cmap1=None,
-                         title=None, figsize=None, s=30, zoom=1):
+                         title=None, figsize=None, s=30, zoom=1, offset_ratio=0.2,w_ratio=0.0025):
         d = y.shape[1]
         if d > 2:
             return
@@ -1262,20 +1282,38 @@ class Visualize:
             figManager.window.showMaximized()
         
         ax = fig.add_subplot()
+        
+        ax = fig.add_subplot()
+        y_x_max = np.max(y[:,0])
+        y_x_min = np.min(y[:,0])
+        y_y_max = np.max(y[:,1])
+        y_y_min = np.min(y[:,1])
+        x_width = np.abs(y_x_max - y_x_min)
+        y_width = np.abs(y_y_max - y_y_min)
+        
+        y_x_max = y_x_max + offset_ratio*x_width
+        y_x_min = y_x_min - offset_ratio*x_width
+        y_y_max = y_y_max + offset_ratio*y_width
+        y_y_min = y_y_min - offset_ratio*y_width
+        
+        ax.plot([y_x_min,y_x_max],[y_y_min,y_y_min], 'k-', linewidth=0.5)
+        ax.plot([y_x_min,y_x_max],[y_y_max,y_y_max], 'k-', linewidth=0.5)
+        
+        ax.plot([y_x_min,y_x_min],[y_y_min,y_y_max], 'k-', linewidth=0.5)
+        ax.plot([y_x_max,y_x_max],[y_y_min,y_y_max], 'k-', linewidth=0.5)
+        
+        
         ax.scatter(y[:,0], y[:,1], s=s, c=labels, cmap=cmap0)
         ax.axis('image')
         if color_of_pts_on_tear is not None:
             ax.scatter(y[:,0], y[:,1],
                        s=s, c=color_of_pts_on_tear, cmap=cmap1)
 
-        y_x_max = np.max(y[:,0])
-        y_x_min = np.min(y[:,0])
-        y_y_max = np.max(y[:,1])
-        y_y_min = np.min(y[:,1])
-        ax.set_xlim(y_x_min - 0.2*np.abs(y_x_min), y_x_max + 0.2*np.abs(y_x_max))
-        ax.set_ylim(y_y_min - 0.2*np.abs(y_y_min), y_x_max + 0.2*np.abs(y_y_max))
         ax.set_title(title)
         #ax.axis('off')
+        ax.set_title('Duble click to choose a point. Press button to exit')
+        fig.canvas.draw()
+        fig.canvas.flush_events()
         first_time = 1
         while True:
             to_exit = plt.waitforbuttonpress(timeout=20)
@@ -1287,6 +1325,9 @@ class Visualize:
                 plt.close()
                 return
             
+            fig.canvas.draw()
+            fig.canvas.flush_events()
+            
             y_k = plt.ginput(1)
             if len(y_k)==0:
                 break
@@ -1294,25 +1335,166 @@ class Visualize:
             k = np.argmin(np.sum((y-y_k)**2,1))
 
             #ax.plot(y[k,0], y[k,1], 'ro', markersize=10)
+            ax.set_title('Choose location of image.')
+            fig.canvas.draw()
+            fig.canvas.flush_events()
+            
             
             z = plt.ginput(1)
             if len(z)==0:
                 break
             z = np.array(z[0])[np.newaxis,:]
             
-            if first_time:
-                first_time = 0
-                continue
+            z = closest_pt(y_x_min, y_x_max, y_y_min, y_y_max, z.flatten().tolist())
+            
+            #if first_time:
+            #    first_time = 0
+            #    continue
                 
-            imscatter(z[0,0], z[0,1], X[k,:].reshape(img_shape).T, ax=ax, zoom=zoom)
+            imscatter(z[0], z[1], X[k,:].reshape(img_shape).T, ax=ax, zoom=zoom)
             
-            z = plt.ginput(1)
-            if len(z)==0:
-                break
-            z = np.array(z[0])[np.newaxis,:]
-            ax.quiver(y[k,0],y[k,1],z[0,0]-y[k,0],z[0,1]-y[k,1],units='xy',scale=1,width=0.3)
-
+            #ax.set_title('Choose arrow end.')
+            fig.canvas.draw()
+            fig.canvas.flush_events()
+            
+            #z = plt.ginput(1)
+            #if len(z)==0:
+            #    break
+            #z = np.array(z[0])[np.newaxis,:]
+            
+            ax.quiver(y[k,0],y[k,1],z[0]-y[k,0],z[1]-y[k,1],units='xy',scale=1,width=w_ratio*x_width)
+            
+            ax.set_title('Duble click to choose a point. Press button to exit')
+            fig.canvas.draw()
+            fig.canvas.flush_events()
             if self.save_dir:
                 if not os.path.isdir(self.save_dir+'/ge_img'):
                     os.makedirs(self.save_dir+'/ge_img')
                 plt.savefig(self.save_dir+'/ge_img/'+str(title)+'.png')
+    
+    def global_embedding_images_v2(self, X, img_shape, y, labels, cmap0, color_of_pts_on_tear=None, cmap1=None,
+                         title='images', offset_ratio=0.3, zoom=1, nx=8, ny=8, v_ratio=0.8, w_ratio=0.005,
+                         figsize=None, s=30, to_remove=False, k_to_avoid=[], to_T=True):
+        d = y.shape[1]
+        if d > 2:
+            return
+        
+        fig = plt.figure(figsize=figsize)
+        if matplotlib.get_backend().startswith('Qt'):
+            figManager = plt.get_current_fig_manager()
+            figManager.window.showMaximized()
+        
+        ax = fig.add_subplot()
+        y_x_max = np.max(y[:,0])
+        y_x_min = np.min(y[:,0])
+        y_y_max = np.max(y[:,1])
+        y_y_min = np.min(y[:,1])
+        x_width = np.abs(y_x_max - y_x_min)
+        y_width = np.abs(y_y_max - y_y_min)
+        
+        y_x_max = y_x_max + offset_ratio*x_width
+        y_x_min = y_x_min - offset_ratio*x_width
+        y_y_max = y_y_max + offset_ratio*y_width
+        y_y_min = y_y_min - offset_ratio*y_width
+        
+        
+        x_i = np.linspace(y_x_min, y_x_max, nx)
+        y_i = np.linspace(y_y_min, y_y_max, ny)
+        
+        pts = np.concatenate([np.concatenate([x_i[:,np.newaxis], np.zeros((nx,1))+y_y_min], axis=1),
+                             np.concatenate([x_i[:,np.newaxis], np.zeros((nx,1))+y_y_max], axis=1),
+                             np.concatenate([np.zeros((ny,1))+y_x_min, y_i[:,np.newaxis]], axis=1),
+                             np.concatenate([np.zeros((ny,1))+y_x_max, y_i[:,np.newaxis]], axis=1)],
+                            axis=0)
+        
+        ax.scatter(y[:,0], y[:,1], s=s, c=labels, cmap=cmap0)
+        ax.axis('image')
+        if color_of_pts_on_tear is not None:
+            ax.scatter(y[:,0], y[:,1],
+                       s=s, c=color_of_pts_on_tear, cmap=cmap1)
+
+        #ax.set_title(title)
+        
+        ax.set_title('Duble click to choose center. Press button to exit')
+        fig.canvas.draw()
+        fig.canvas.flush_events()
+        to_exit = plt.waitforbuttonpress(timeout=20)
+        if to_exit is None:
+            print('Timed out')
+            return
+
+        if to_exit:
+            plt.close()
+            return
+        
+        y_bar = plt.ginput(1)
+        if len(y_bar)==0:
+            return
+        y_bar = np.array(y_bar[0])[np.newaxis,:]
+        
+        ax.set_title(title)
+        fig.canvas.draw()
+        fig.canvas.flush_events()
+        
+        if color_of_pts_on_tear is not None:
+            mask = ~np.isnan(color_of_pts_on_tear)
+            inds = np.where(mask)[0]
+            V2 = y[mask,:]-y_bar
+            V2 = V2/np.sqrt(np.sum(V2**2,1)[:,np.newaxis])
+        else:
+            is_visited = np.ones((y.shape[0]))
+        
+        for k_ in range(pts.shape[0]):
+            if color_of_pts_on_tear is not None:
+                v1 = pts[k_,:][np.newaxis,:] - y_bar
+                v1 = v1/np.sqrt(np.sum(v1**2))
+                cos_sim = np.sum(V2 * v1,1)
+                k = np.argmax(cos_sim)
+                k = inds[k]
+            else:
+                k = np.argmin(is_visited * np.sum((y-pts[k_:k_+1,:])**2,1))
+                is_visited[k] = np.inf
+            
+            if k in k_to_avoid:
+                continue
+            
+            #ax.plot(pts[k_,0], pts[k_,1], 'r.')
+            if to_T:
+                imscatter(pts[k_,0], pts[k_,1], X[k,:].reshape(img_shape).T, ax=ax, zoom=zoom)
+            else:
+                imscatter(pts[k_,0], pts[k_,1], X[k,:].reshape(img_shape), ax=ax, zoom=zoom)
+            ax.quiver(y[k,0],y[k,1],v_ratio*(pts[k_,0]-y[k,0]),v_ratio*(pts[k_,1]-y[k,1]),
+                      units='xy',scale=1,width=w_ratio*x_width)
+        
+        ax.axis('off')
+        
+        if to_remove:
+            ax.set_title('Double click to choose a point. Press button to exit')
+            while True:
+                to_exit = plt.waitforbuttonpress(timeout=20)
+                if to_exit is None:
+                    print('Timed out')
+                    break
+
+                if to_exit:
+                    #plt.close()
+                    break
+
+                fig.canvas.draw()
+                fig.canvas.flush_events()
+
+                y_k = plt.ginput(1)
+                if len(y_k)==0:
+                    break
+                y_k = np.array(y_k[0])[np.newaxis,:]
+                k = np.argmin(np.sum((y-y_k)**2,1))
+                k_to_avoid.append(k)
+                ax.plot(y[k,0], y[k,1], 'ro')
+
+            print(k_to_avoid)
+            print('Re run by passing printed k_to_avoid as argument')
+        
+        if self.save_dir:
+            if not os.path.isdir(self.save_dir+'/ge_img_v2'):
+                os.makedirs(self.save_dir+'/ge_img_v2')
+            plt.savefig(self.save_dir+'/ge_img_v2/'+str(title)+'.png')

@@ -8,6 +8,10 @@ import scipy
 from scipy.spatial.distance import cdist
 import pandas as pd
 from PIL import Image, ImageOps
+from sklearn.decomposition import PCA
+import os
+import scipy.misc
+import matplotlib.image as mpimg
 
 def read_img(fpath, grayscale=False, bbox=None):
     if grayscale:
@@ -18,6 +22,16 @@ def read_img(fpath, grayscale=False, bbox=None):
         return np.asarray(img.crop(bbox).reduce(2))
     else:
         return np.asarray(img.reduce(2))
+    
+def do_pca(X, n_pca):
+    print('Applying PCA')
+    pca = PCA(n_components=n_pca, random_state=42)
+    pca.fit(X)
+    print('explained_variance_ratio:', pca.explained_variance_ratio_)
+    print('sum(explained_variance_ratio):', np.sum(pca.explained_variance_ratio_))
+    print('singular_values:', pca.singular_values_)
+    X = pca.fit_transform(X)
+    return X
 
 class Datasets:
     def __init__(self):
@@ -66,6 +80,56 @@ class Datasets:
         xv, yv = np.meshgrid(x, y)
         xv = xv.flatten('F')[:,np.newaxis]
         yv = yv.flatten('F')[:,np.newaxis]
+        X = np.concatenate([xv,yv], axis=1)
+        if noise:
+            np.random.seed(42)
+            n = xv.shape[0]
+            if noise_type == 'normal':
+                n = xv.shape[0]
+                X = np.concatenate([X,np.zeros((n,1))], axis=1)
+                X = X + noise*np.random.normal(0,1,(n,3))
+            elif noise_type == 'uniform':
+                X = np.concatenate([X,noise*np.random.uniform(-1,1,(n,1))], axis=1)
+            
+        labelsMat = X
+        print('X.shape = ', X.shape)
+        
+        n = X.shape[0]
+        ddX = np.zeros(n)
+        for k in range(n):
+            ddXx = np.min([X[k,0], sideLx-X[k,0]])
+            ddXy = np.min([X[k,1], sideLy-X[k,1]])
+            ddX[k] = np.min([ddXx, ddXy])
+            
+        return X, labelsMat, ddX
+    
+    def rectanglegrid_mog(self, ar=16, RES=10, n=100, sigma=0.015, noise=0, noise_type='uniform'):
+        sideLx = np.sqrt(ar)
+        sideLy = 1/sideLx
+        RESx = int(sideLx*RES+1)
+        RESy = int(sideLy*RES+1)
+        x = np.linspace(0, sideLx, RESx)
+        y = np.linspace(0, sideLy, RESy)
+        xv_, yv_ = np.meshgrid(x, y)
+        xv_ = xv_.flatten('F')
+        yv_ = yv_.flatten('F')
+        
+        xv = []
+        yv = []
+        cluster_label = []
+        np.random.seed(42)
+        for i in range(xv_.shape[0]):
+            X_r = np.random.multivariate_normal([xv_[i],yv_[i]], [[sigma,0],[0,sigma]], [n])
+            #X_r[:,0] = np.clip(X_r[:,0], 0, sideLx)
+            #X_r[:,1] = np.clip(X_r[:,1], 0, sideLy)
+            xv += X_r[:,0].tolist()
+            yv += X_r[:,1].tolist()
+            cluster_label += [i]*n
+        
+        xv = np.array(xv)[:,np.newaxis]
+        yv = np.array(yv)[:,np.newaxis]
+        cluster_label = np.array(cluster_label)[:,np.newaxis]
+        
         X = np.concatenate([xv,yv], axis=1)
         if noise:
             np.random.seed(42)
@@ -290,6 +354,62 @@ class Datasets:
         print('X.shape = ', X.shape)
         return X, labelsMat, None
     
+    def sphere_mog(self, k=10, n=1000, sigma=0.1, noise = 0):
+        R = np.sqrt(1/(4*np.pi))
+        indices = np.arange(k)+0.5
+        phiv_ = np.arccos(1 - 2*indices/k)
+        thetav_ = np.mod(np.pi*(1 + np.sqrt(5))*indices, 2*np.pi)
+        
+        phiv = []
+        thetav = []
+        cluster_label = []
+        np.random.seed(42)
+        for i in range(k):
+            X_r = np.random.multivariate_normal([phiv_[i],thetav_[i]], [[sigma,0],[0,sigma]], [n])
+            phiv += X_r[:,0].tolist()
+            thetav += X_r[:,1].tolist()
+            cluster_label += [i]*n
+        
+        phiv = np.array(phiv)[:,np.newaxis]
+        thetav = np.array(thetav)[:,np.newaxis]
+        cluster_label = np.array(cluster_label)[:,np.newaxis]
+        
+        X = np.concatenate([np.sin(phiv)*np.cos(thetav),
+                            np.sin(phiv)*np.sin(thetav),
+                            np.cos(phiv)], axis=1)
+        X = X*R;
+        np.random.seed(2)
+        X = X*(1+noise*np.random.uniform(-1,1,(X.shape[0],1)))
+        labelsMat = np.concatenate([cluster_label,np.mod(thetav,2*np.pi), phiv], axis=1)
+        print('X.shape = ', X.shape)
+        return X, labelsMat, None
+    
+    def spherewithanomaly(self, n=10000, epsilon=0.05, noise=0.05):
+        R = np.sqrt(1/(4*np.pi))
+        indices = np.arange(n)+0.5
+        phiv = np.arccos(1 - 2*indices/n)
+        phiv = phiv[:,np.newaxis]
+        thetav = np.pi*(1 + np.sqrt(5))*indices
+        thetav = thetav[:,np.newaxis]
+        X = np.concatenate([np.sin(phiv)*np.cos(thetav),
+                            np.sin(phiv)*np.sin(thetav),
+                            np.cos(phiv)], axis=1)
+        X = X*R;
+        np.random.seed(2)
+        X = X*(1+noise*np.random.uniform(-1,1,(X.shape[0],1)))
+        labelsMat = np.concatenate([np.mod(thetav,2*np.pi), phiv], axis=1)
+        
+        # add anomaly at north pole
+        k = np.argmin(np.abs(phiv))
+        d_k_kp = np.sqrt(np.sum((X - X[k,:][np.newaxis,:])**2, axis=1))
+        mask = (d_k_kp < epsilon)
+        n_ = np.sum(mask)
+        np.random.seed(42)
+        X[mask,2:3] = X[mask,2:3] + np.random.normal(0,1,(n_,1))*noise
+        
+        print('X.shape = ', X.shape)
+        return X, labelsMat, None
+    
     def flattorus4d(self, ar=4, RES=100):
         sideLx=np.sqrt(ar)
         sideLy=1/sideLx
@@ -427,7 +547,7 @@ class Datasets:
         print('X.shape = ', X.shape)
         return X, labelsMat, None
     
-    def mnist(self, digits, n):
+    def mnist(self, digits, n, n_pca=25, normalize=False):
         X0, y0 = fetch_openml('mnist_784', version=1, return_X_y=True, as_frame=False)
         X = []
         y = []
@@ -438,26 +558,50 @@ class Datasets:
             y.append(np.zeros(n)+digit)
             
         X = np.concatenate(X, axis=0)
+        if normalize:
+            X = X - np.mean(X,axis=0)[np.newaxis,:]
+            X = X / (np.std(X,axis=0)[np.newaxis,:] + 1e-12)
         y = np.concatenate(y, axis=0)
         labelsMat = y[:,np.newaxis]
-        print('X.shape = ', X.shape)
-        return X, labelsMat, None
+        
+        if n_pca:
+            X_new = do_pca(X,n_pca)
+        else:
+            X_new = X
+        
+        print('X_new.shape = ', X_new.shape)
+        return X_new, labelsMat, X, [28,28] 
     
-    def face_data(self, fpath, pc=False):
+    def face_data(self, fpath, pc=False, n_pca=0):
         data = scipy.io.loadmat(fpath)
         if pc:
             X = data['image_pcs'].transpose()
         else:
             X = data['images'].transpose()
         labelsMat = np.concatenate([data['lights'].transpose(), data['poses'].transpose()], axis=1)
-        print('X.shape = ', X.shape)
-        return X, labelsMat, None
+        
+        if n_pca:
+            X_new = do_pca(X,n_pca)
+        else:
+            X_new = X
+        
+        print('X.shape = ', X_new.shape)
+        
+        min_pose = np.min(labelsMat[:,1])
+        min_light = np.min(labelsMat[:,0])
+        max_pose = np.max(labelsMat[:,1])
+        max_light = np.max(labelsMat[:,0])
+        N = X.shape[0]
+        ddX = np.zeros(N)
+        for k in range(N):
+            ddX1 = np.min([labelsMat[k,0]-min_light, max_light-labelsMat[k,0]])
+            ddX2 = np.min([labelsMat[k,1]-min_pose, max_pose-labelsMat[k,1]])
+            ddX[k] = np.min([ddX1, ddX2])
+        
+        return X_new, labelsMat, X, [64,64], ddX
     
-    def puppets_data(self, dirpath, prefix='s1', n=None, bbox=None, grayscale=False, normalize = False):
-        import numpy as np
-        import os
-        import scipy.misc
-        import matplotlib.image as mpimg
+    def puppets_data(self, dirpath, prefix='s1', n=None, bbox=None,
+                     grayscale=False, normalize = False, n_pca=100):
         X = []
         labels = []
         fnames = []
@@ -472,6 +616,8 @@ class Datasets:
             X_k = read_img(dirpath+'/'+fname, bbox=bbox, grayscale=grayscale)
             X.append(X_k.T.flatten())
             labels.append(int(fname.split('.')[0].split('_')[1])-100000)
+        
+        img_shape = X_k.shape
         X = np.array(X)
         labels = np.array(labels)[:,np.newaxis]-1
         labelsMat = np.concatenate([labels,labels], axis=1)
@@ -485,8 +631,13 @@ class Datasets:
         if normalize:
             X = X - np.mean(X,axis=0)[np.newaxis,:]
             X = X / (np.std(X,axis=0)[np.newaxis,:] + 1e-12)
-        print('X.shape = ', X.shape)
-        return X, labelsMat, None
+            
+        if n_pca:
+            X_new = do_pca(X, n_pca)
+        else:
+            X_new = X
+        print('X.shape = ', X_new.shape)
+        return X_new, labelsMat, X, img_shape
         
     
     def soils88(self, labels_path, X_path):
