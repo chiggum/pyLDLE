@@ -5,4 +5,4 @@
 - Please refer to the notebook corresponding to one of the example on how to use LDLE on your dataset.
 
 <a id="1">[1]</a> 
-D. Kohli, A. Cloninger and G. Mishne. "LDLE: Low Distortion Local Eigenmaps." arXiv preprint arXiv:2101.11055 (2021).
+D. Kohli, A. Cloninger and G. Mishne. LDLE: Low Distortion Local Eigenmaps. <em>arXiv preprint arXiv:2101.11055 (2021)</em>.
