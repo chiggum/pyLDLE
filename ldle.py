@@ -1087,13 +1087,36 @@ class LDLE:
                     W[mp,m] = W[m,mp]
 
         print('Ambiguous overlaps checked for %d points' % M)
-        # Compute maximum spanning tree of W
+        # Compute maximum spanning tree/forest of W
         T = minimum_spanning_tree(coo_matrix(-W))
-        # Compute breadth first order in T starting from s_1
-        s, rho = breadth_first_order(T, s_1, directed=False) #(ignores edge weights)
+        # Detect clusters of manifolds and create
+        # a sequence of intermediate views for each of them
+        n_visited = 0
+        s = []
+        rho = []
+        # stores cluster number for the intermediate views in a cluster
+        Tc = np.zeros(M,dtype=int)
+        is_visited = np.zeros(M, dtype=bool)
+        c_num = 0
+        while n_visited < M:
+            # First intermediate view in the sequence
+            s_1 = np.argmax(self.n_C * (1-is_visited))
+            # Compute breadth first order in T starting from s_1
+            s_, rho_ = breadth_first_order(T, s_1, directed=False) #(ignores edge weights)
+            s.append(s_)
+            rho.append(rho_)
+            is_visited[s_] = True
+            Tc[s_] = c_num
+            n_visited = np.sum(is_visited)
+            c_num = c_num + 1
+            
+        self.Tc = Tc.tolist()
+            
+            
         print('Seq of intermediate views and their predecessors computed.')
-        if s.shape[0] < M:
-            raise RuntimeError('Multiple connected components detected')
+        print('No. of connected components =', len(s))
+        if len(s)>1:
+            print('Multiple connected components detected')
         return s, rho
     
     def compute_Utildeg(self, y):
@@ -1160,29 +1183,35 @@ class LDLE:
         # ambient space but not in the embedding space
         tear = (self.n_Utilde_Utilde > 0) & (n_Utildeg_Utildeg == 0)
 
-        # track the next color to assign
-        cur_color = 1
-        
-        seq, rho = breadth_first_order(self.n_Utilde_Utilde>0, 0, directed=False) #(ignores edge weights)
-        
+        # Keep track of visited views across clusters of manifolds
+        is_visited = np.zeros(M, dtype=bool)
+        n_visited = 0
+        while n_visited < M: # boundary of a cluster remain to be colored
+            # track the next color to assign
+            cur_color = 1
 
-        # Iterate over views
-        for m in seq:
-            to_tear_mth_view_with = np.where(tear[m,:])[0].tolist()
-            if len(to_tear_mth_view_with):
-                # Points in the overlap of mth view and the views
-                # on the opposite side of the tear
-                temp = self.Utilde[m,:][np.newaxis,:] & self.Utilde[to_tear_mth_view_with,:]
-                for i in range(len(to_tear_mth_view_with)):
-                    mp = to_tear_mth_view_with[i]
-                    # Compute points on the overlap of m and m'th view
-                    # which are in mth cluster and in m'th cluster. If
-                    # both sets are non-empty then assign them same color.
-                    temp_m = temp[i,:] & (self.C[m,:]) & np.isnan(color_of_pts_on_tear)
-                    temp_mp = temp[i,:] & (self.C[mp,:])  & np.isnan(color_of_pts_on_tear)
-                    if np.any(temp_m) and np.any(temp_mp):
-                        color_of_pts_on_tear[temp_m|temp_mp] = cur_color
-                        cur_color += 1
+            s0 = np.argmax(is_visited == 0)
+            seq, rho = breadth_first_order(self.n_Utilde_Utilde>0, s0, directed=False) #(ignores edge weights)
+            is_visited[seq] = True
+            n_visited = np.sum(is_visited)
+
+            # Iterate over views
+            for m in seq:
+                to_tear_mth_view_with = np.where(tear[m,:])[0].tolist()
+                if len(to_tear_mth_view_with):
+                    # Points in the overlap of mth view and the views
+                    # on the opposite side of the tear
+                    temp = self.Utilde[m,:][np.newaxis,:] & self.Utilde[to_tear_mth_view_with,:]
+                    for i in range(len(to_tear_mth_view_with)):
+                        mp = to_tear_mth_view_with[i]
+                        # Compute points on the overlap of m and m'th view
+                        # which are in mth cluster and in m'th cluster. If
+                        # both sets are non-empty then assign them same color.
+                        temp_m = temp[i,:] & (self.C[m,:]) & np.isnan(color_of_pts_on_tear)
+                        temp_mp = temp[i,:] & (self.C[mp,:])  & np.isnan(color_of_pts_on_tear)
+                        if np.any(temp_m) and np.any(temp_mp):
+                            color_of_pts_on_tear[temp_m|temp_mp] = cur_color
+                            cur_color += 1
                         
         return color_of_pts_on_tear
 
@@ -1200,96 +1229,119 @@ class LDLE:
 
         # Compute the sequence s in which intermediate views
         # are visited. rho[m] = predecessor of mth view.
-        seq, self.rho = self.compute_seq_of_intermediate_views()
+        all_seq, self.all_rho = self.compute_seq_of_intermediate_views()
 
         # Boolean array to keep track of already visited views
         is_visited = np.zeros(M, dtype=bool)
-        is_visited[seq[0]] = True
+        s0_seq = []
+        for i in range(len(all_seq)):
+            seq = all_seq[i]
+            s0_seq.append(seq[0])
+            is_visited[seq[0]] = True
+            C_s_0 = self.C[seq[0],:]
+            y[C_s_0,:] = self.intermed_param.eval_(seq[0], C_s_0)
 
-        C_s_0 = self.C[seq[0],:]
-        y[C_s_0,:] = self.intermed_param.eval_(seq[0], C_s_0)
-        
         self.print_time_log('Naive initialization done. Time passed = %0.1f seconds.' % (time.time()-old_time))
 
-        # Traverse views from 2nd view
-        for m in range(1,M):
-            if print_freq and np.mod(m, print_freq)==0:
-                print('Initial alignment of %d views completed' % m)
-            s = seq[m]
-            # pth view is the parent of sth view
-            p = self.rho[s]
-            Utilde_s = self.Utilde[s,:]
+        #pdb.set_trace()
 
-            # If to tear apart closed manifolds
-            if self.to_tear:
-                # Compute T_s and v_s by aligning
-                # the embedding of the overlap Utilde_{sp}
-                # due to sth view with that of the pth view
-                Utilde_s_p = Utilde_s*self.Utilde[p,:]
-                V_s_p = self.intermed_param.eval_(s, Utilde_s_p)
-                V_p_s = self.intermed_param.eval_(p, Utilde_s_p)
-                self.intermed_param.T[s,:,:], self.intermed_param.v[s,:], err[s], _ = procrustes(V_s_p, V_p_s)
+        for i in range(len(all_seq)):
+            seq = all_seq[i]
+            rho = self.all_rho[i]
+            # Traverse views from 2nd view
+            for m in range(1,seq.shape[0]):
+                if print_freq and np.mod(m, print_freq)==0:
+                    print('Initial alignment of %d views completed' % m)
+                s = seq[m]
+                # pth view is the parent of sth view
+                p = rho[s]
+                Utilde_s = self.Utilde[s,:]
 
-                # Compute temporary global embedding of point in sth cluster
+                # If to tear apart closed manifolds
+                if self.to_tear:
+                    # Compute T_s and v_s by aligning
+                    # the embedding of the overlap Utilde_{sp}
+                    # due to sth view with that of the pth view
+                    Utilde_s_p = Utilde_s*self.Utilde[p,:]
+                    V_s_p = self.intermed_param.eval_(s, Utilde_s_p)
+                    V_p_s = self.intermed_param.eval_(p, Utilde_s_p)
+                    self.intermed_param.T[s,:,:], self.intermed_param.v[s,:], err[s], _ = procrustes(V_s_p, V_p_s)
+
+                    # Compute temporary global embedding of point in sth cluster
+                    C_s = self.C[s,:]
+                    y[C_s,:] = self.intermed_param.eval_(s, C_s)
+
+                    # Find more views to align sth view with
+                    Z_s = is_visited & (self.n_Utilde_Utilde[s,:]>0)
+                    Z_s = np.where(Z_s)[0]
+                    Z_s = self.compute_Z_s_to_tear(y, s, Z_s)
+                # otherwise
+                else:
+                    # Align sth view with all the views which have
+                    # an overlap with sth view in the ambient space
+                    Z_s = is_visited & (self.n_Utilde_Utilde[s,:]>0)
+                    Z_s = np.where(Z_s)[0]
+
+                Z_s = Z_s.tolist()
+                # If for some reason Z_s is empty
+                if len(Z_s)==0:
+                    Z_s = [p]
+
+                # Compute centroid mu_s
+                # n_Utilde_s_Z_s[k] = #views in Z_s which contain
+                # kth point if kth point is in the sth view, else zero
+                n_Utilde_s_Z_s = np.zeros(n, dtype=int)
+                mu_s = np.zeros((n,d))
+                for mp in Z_s:
+                    Utilde_s_mp = Utilde_s & self.Utilde[mp,:]
+                    n_Utilde_s_Z_s[Utilde_s_mp] += 1
+                    mu_s[Utilde_s_mp,:] += self.intermed_param.eval_(mp, Utilde_s_mp)
+
+                # Compute T_s and v_s by aligning the embedding of the overlap
+                # between sth view and the views in Z_s, with the centroid mu_s
+                temp = n_Utilde_s_Z_s > 0
+                mu_s = mu_s[temp,:] / n_Utilde_s_Z_s[temp,np.newaxis]
+                V_s_Z_s = self.intermed_param.eval_(s, temp)
+
+                T_s, v_s, err[s], _ = procrustes(V_s_Z_s, mu_s)
+
+                # Update T_s, v_
+                self.intermed_param.T[s,:,:] = np.dot(self.intermed_param.T[s,:,:], T_s)
+                self.intermed_param.v[s,:] = np.dot(self.intermed_param.v[s,:][np.newaxis,:], T_s) + v_s
+
+                # Mark sth view as visited
+                is_visited[s] = True
+
+                # Compute global embedding of point in sth cluster
                 C_s = self.C[s,:]
                 y[C_s,:] = self.intermed_param.eval_(s, C_s)
 
-                # Find more views to align sth view with
-                Z_s = is_visited & (self.n_Utilde_Utilde[s,:]>0)
-                Z_s = np.where(Z_s)[0]
-                Z_s = self.compute_Z_s_to_tear(y, s, Z_s)
-            # otherwise
-            else:
-                # Align sth view with all the views which have
-                # an overlap with sth view in the ambient space
-                Z_s = is_visited & (self.n_Utilde_Utilde[s,:]>0)
-                Z_s = np.where(Z_s)[0]
-
-            Z_s = Z_s.tolist()
-            # If for some reason Z_s is empty
-            if len(Z_s)==0:
-                Z_s = [p]
-
-            # Compute centroid mu_s
-            # n_Utilde_s_Z_s[k] = #views in Z_s which contain
-            # kth point if kth point is in the sth view, else zero
-            n_Utilde_s_Z_s = np.zeros(n, dtype=int)
-            mu_s = np.zeros((n,d))
-            for mp in Z_s:
-                Utilde_s_mp = Utilde_s & self.Utilde[mp,:]
-                n_Utilde_s_Z_s[Utilde_s_mp] += 1
-                mu_s[Utilde_s_mp,:] += self.intermed_param.eval_(mp, Utilde_s_mp)
-
-            # Compute T_s and v_s by aligning the embedding of the overlap
-            # between sth view and the views in Z_s, with the centroid mu_s
-            temp = n_Utilde_s_Z_s > 0
-            mu_s = mu_s[temp,:] / n_Utilde_s_Z_s[temp,np.newaxis]
-            V_s_Z_s = self.intermed_param.eval_(s, temp)
-            
-            T_s, v_s, err[s], _ = procrustes(V_s_Z_s, mu_s)
-            
-            # Update T_s, v_
-            self.intermed_param.T[s,:,:] = np.dot(self.intermed_param.T[s,:,:], T_s)
-            self.intermed_param.v[s,:] = np.dot(self.intermed_param.v[s,:][np.newaxis,:], T_s) + v_s
-
-            # Mark sth view as visited
-            is_visited[s] = True
-
-            # Compute global embedding of point in sth cluster
-            C_s = self.C[s,:]
-            y[C_s,:] = self.intermed_param.eval_(s, C_s)
-
         print('error:', np.mean(err))
         
+        # refine distance between connected components
+        offset = 0
+        for i in range(len(all_seq)):
+            seq = all_seq[i]
+            C_s_ = np.any(self.C[seq,:], axis=0)
+            if i > 0:
+                offset_ = np.min(y[C_s_,0])
+                self.intermed_param.v[seq,0] += offset - offset_
+            
+            for s in range(seq.shape[0]):
+                C_s = self.C[seq[s],:]
+                y[C_s,:] = self.intermed_param.eval_(seq[s], C_s)
+            
+            offset = np.max(y[C_s_,0])
+           
         self.print_time_log('Better initialization done. Time passed = %0.1f seconds.' % (time.time()-old_time))
-        
+
         if self.to_tear:
             color_of_pts_on_tear = self.compute_color_of_pts_on_tear(y)
         else:
             color_of_pts_on_tear = None
-            
+
         self.print_time_log('Tear computation done. Time passed = %0.1f seconds.' % (time.time()-old_time))
-        
+
         if self.vis is not None:
             v_opts = self.vis_y_options
             self.vis.global_embedding(y, v_opts['labels'], v_opts['cmap0'],
@@ -1297,10 +1349,10 @@ class LDLE:
                                       'Initial')
             plt.show()
             #plt.waitforbuttonpress(1)
-        
+
         self.print_time_log('Plot done. Time passed = %0.1f seconds.' % (time.time()-old_time))
-        
-        return y, seq[0], color_of_pts_on_tear
+
+        return y, s0_seq, color_of_pts_on_tear
     
     def compute_final_global_embedding(self, max_iter0, max_iter1, scaling=False):
         # Intializations
@@ -1332,7 +1384,7 @@ class LDLE:
             for it1 in range(max_iter1):
                 for s in seq.tolist():
                     # Never refine s_0th intermediate view
-                    if s == self.s_0:
+                    if s in self.s_0:
                         C_s = self.C[s,:]
                         y[C_s,:] = self.intermed_param.eval_(s, C_s)
                         continue
@@ -1352,7 +1404,7 @@ class LDLE:
                     Z_s = np.where(Z_s)[0].tolist()
                     
                     if len(Z_s) == 0:
-                        Z_s = [self.rho[s]]
+                        Z_s = [self.all_rho[self.Tc[s]][s]]
 
                     # Compute centroid mu_s
                     # n_Utilde_s_Z_s[k] = #views in Z_s which contain
@@ -1407,114 +1459,6 @@ class LDLE:
                 self.print_time_log('it0=%d, plot done. Time passed = %0.1f seconds.' % (it0, time.time()-old_time))
 
         return y, color_of_pts_on_tear
-    
-    def compute_final_global_embedding_geotorch_based(self):
-        # Intializations
-        M,n = self.Utilde.shape[0]
-        d = self.d
-
-        T = np.copy(self.T_init)
-        v = np.copy(self.v_init)
-
-        # Initialize pytorch parameters
-        Tv = [] # T_m, v_m = Tv[m].weight, Tv[m].bias
-        params = []
-        for m in range(M):
-            Tv.append(torch.nn.Linear(d, d, bias=True).double())
-            # Orthogonality constraints on weights
-            geotorch.orthogonal(Tv[-1], "weight")
-            # Initialize weights
-            Tv[-1].weight = torch.from_numpy(T[m,:,:].T)
-            Tv[-1].bias.data = torch.from_numpy(v[m,:])
-            if m != self.s_0: # Never update parameters of first intermediate view
-                params += Tv[-1].parameters()
-
-        optim = torch.optim.Adam(params, lr=self.geotorch_options['lr'])
-        n_neg_samples = self.geotorch_options['n_neg_samples']
-
-        np.random.seed(42) # for reproducbility
-
-        y = np.copy(self.y_init)
-
-        # If to tear the closed manifolds
-        if self.to_tear:
-            # Compute |Utildeg_{mm'}|
-            _, n_Utildeg_Utildeg = self.compute_Utildeg(y)
-
-        # Refine global embedding y
-        for it0 in range(self.max_iter0):
-            print('Iteration: %d' % it0)
-            for epoch in range(self.max_iter1):
-                loss = torch.tensor(0)
-                for s in range(M):
-                    Utilde_s = self.Utilde[s,:]
-                    n_Utilde_Utilde_s = self.n_Utilde_Utilde[s,:]
-
-                    # If to tear apart closed manifolds
-                    if self.to_tear:
-                        # Find more views to align sth view with
-                        Z_s = (n_Utilde_Utilde_s > 0) & (n_Utildeg_Utildeg[s,:] > 0)
-                    # otherwise
-                    else:
-                        # Align sth view with all the views which have
-                        # an overlap with sth view in the ambient space
-                        Z_s = n_Utilde_Utilde_s > 0
-
-                    not_Z_s = np.where(n_Utilde_Utilde_s == 0)[0].tolist() # non-overlapping views
-                    Z_s = np.where(Z_s)[0].tolist()
-
-                    for mp in Z_s:
-                        Utilde_s_mp = Utilde_s & self.Utilde[mp,:]
-                        V_s_mp = self.intermed_param.eval(s, Utilde_s_mp)
-                        V_mp_s = self.intermed_param.eval(mp, Utilde_s_mp)
-                        #pdb.set_trace()
-                        loss = loss + torch.mean(torch.square(Tv[s](torch.from_numpy(V_s_mp)) - Tv[mp](torch.from_numpy(V_mp_s))))
-
-                    np.random.shuffle(not_Z_s)
-                    for mp in not_Z_s[:n_neg_samples]:
-                        V_s_s = eval_param(self.phi, self.Psitilde_gamma, self.Psitilde_i,
-                                              s, Utilde_s, self.btilde)
-                        V_s_s = np.mean(V_s_s, 0)[np.newaxis,:]
-                        Utilde_mp = self.Utilde[mp,:]
-                        V_mp_mp = eval_param(self.phi, self.Psitilde_gamma, self.Psitilde_i,
-                                              mp, Utilde_mp, self.btilde)
-                        V_mp_mp = np.mean(V_mp_mp, 0)[np.newaxis,:]
-                        d_1 = torch.sum(torch.square(Tv[s](torch.from_numpy(V_s_s)) - Tv[mp](torch.from_numpy(V_mp_mp))))
-                        d_2 = np.mean(self.d_e[np.ix_(Utilde_s,Utilde_mp)])
-                        loss = loss + self.geotorch_options['lambda_r'] * torch.absolute(d_1 - d_2)
-
-                loss = loss/M
-                optim.zero_grad()
-                loss.backward()
-                optim.step()
-                print("Epoch {} Loss: {:.6f}".format(epoch, loss))
-
-            for s in range(M):
-                # Store learned T and v
-                T[s,:,:] = Tv[s].weight.detach().numpy().T
-                v[s,:] = Tv[s].bias.detach().numpy()
-                # Compute global embedding of points in sth cluster
-                C_s = self.c==s
-                y[C_s,:] = eval_param(self.phi, self.Psitilde_gamma, self.Psitilde_i,
-                                       s, C_s, self.btilde, T, v)
-
-            # If to tear the closed manifolds
-            if self.to_tear:
-                # Compute |Utildeg_{mm'}|
-                _, n_Utildeg_Utildeg = self.compute_Utildeg(y)
-                color_of_pts_on_tear = self.compute_color_of_pts_on_tear(y, n_Utildeg_Utildeg)
-            else:
-                color_of_pts_on_tear = None
-
-            # Visualize current embedding
-            if self.vis is not None:
-                v_opts = self.vis_y_options
-                self.vis.global_embedding(y, v_opts['labels'], v_opts['cmap0'],
-                                          color_of_pts_on_tear, v_opts['cmap1'],
-                                          ('Iter_%d' % it0))
-                plt.waitforbuttonpress(1)
-
-        return T, v, y, color_of_pts_on_tear
     
     def compute_final_global_embedding_ltsap_based(self):
         M,n = self.Utilde.shape

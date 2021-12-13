@@ -354,6 +354,35 @@ class Datasets:
         print('X.shape = ', X.shape)
         return X, labelsMat, None
     
+    def sphere_and_swissroll(self, n=5000, RES=70, noise1 = 0.01, noise2=0.015, sep=1):
+        s1, l1, _ = self.sphere(n, noise=noise1)
+        s2, l2, _ = self.noisyswissroll(RES=RES, noise=noise2)
+        x_max = np.max(s1[:,0])
+        x_min = np.min(s2[:,0])
+        s2 = s2 + np.array([x_max-x_min,0,0]).reshape((1,3)) + sep
+        X = np.concatenate([s1, s2], axis=0)
+        labelsMat = np.concatenate([l1, l2], axis=0)
+        print('X.shape = ', X.shape)
+        return X, labelsMat, None
+    
+    def multi_spheres(self, m=3, n=3000, noise = 0, sep=1):
+        X = []
+        labelsMat = []
+        offset = 0
+        for i in range(m):
+            s1, l1, _ = self.sphere(n, noise)
+            if i > 0:
+                s1[:,0] += 1.25*offset - np.min(s1[:,0])
+            offset = np.max(s1[:,0])
+            X.append(s1)
+            labelsMat.append(l1)
+            
+        
+        X = np.concatenate(X, axis=0)
+        labelsMat = np.concatenate(labelsMat, axis=0)
+        print('X.shape = ', X.shape)
+        return X, labelsMat, None
+    
     def sphere_mog(self, k=10, n=1000, sigma=0.1, noise = 0):
         R = np.sqrt(1/(4*np.pi))
         indices = np.arange(k)+0.5
